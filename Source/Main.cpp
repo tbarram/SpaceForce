@@ -57,7 +57,7 @@ public:
         This class implements the desktop window that contains an instance of
         our MainComponent class.
     */
-    class MainWindow    : public DocumentWindow
+    class MainWindow    : public DocumentWindow, public KeyListener
     {
     public:
         MainWindow (String name)  : DocumentWindow (name,
@@ -70,7 +70,17 @@ public:
 
             centreWithSize (getWidth(), getHeight());
             setVisible (true);
+			
+			setWantsKeyboardFocus(true);
+			grabKeyboardFocus();
         }
+		
+		virtual bool keyPressed(const KeyPress&, Component*) override
+		{
+			int bp = 0;
+			bp++;
+			return true;
+		}
 
         void closeButtonPressed() override
         {

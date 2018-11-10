@@ -22,13 +22,20 @@
 
 #include "UPongView.h"
 #include <list>
+#include <map>
 
 using CRect = Rectangle<int32_t>; // x,y,w,h
+using CRectF = Rectangle<float>;
 using CPoint = Point<float>;
 using Cmn_Point32 = Point<int32_t>;
 using DFW_ImageRef = void*;
 
 int Cmn_Max(int a, int b)
+{
+	return a > b ? a : b;
+}
+
+double Cmn_Max(double a, double b)
 {
 	return a > b ? a : b;
 }
@@ -54,13 +61,29 @@ void CMN_ASSERT(void* ptr) { CMN_DEBUGASSERT(ptr != nullptr); }
 namespace pong
 {
 
+const std::string cImagesFolderDir = "/Users/tbarram/workspaces/JUCE/SpaceForce/Images/IconImages";
+const std::string cFlatEarthImagePath = "/Users/tbarram/workspaces/JUCE/SpaceForce/Images/vibe_meter_glow_48.png";
+const std::string cChaserImagePath = "/Users/tbarram/workspaces/JUCE/SpaceForce/Images/IconImages/bomb.png";
+const std::string cBackgroundImagePath = "/Users/tbarram/workspaces/JUCE/SpaceForce/Images/stars.png";
 const Colour cShipColor = juce::Colours::black;
 const Colour cShipEdgeColor = juce::Colours::aliceblue;
 const Colour cShipEdgeBrightColor = juce::Colours::yellow;
 const Colour cGroundColor = juce::Colours::red;
 const Colour cTextColor = juce::Colours::lawngreen;
 const double PI = 3.1415926;
-const int32_t kBossFrequency = 26;
+	
+const int32_t kGridHeight = 800;
+const int32_t kGridWidth = 1200;
+	
+// tweak these for performance and sensitivity of controls
+const int32_t kRefreshRateMS = 10;
+const int32_t kAnimateThrottleMS = 10;
+const double kRotateSpeed = pong::PI/20;
+const double kThrustSpeed = 20;
+
+// set true if you just want to fly around with no distractions
+const bool kNoObjects = false;
+const bool kNoGravity = false;
 
 int32_t rnd(int32_t max) { return ::rand() % max; }
 int32_t rnd(int32_t min, int32_t max) { return min + ::rand() % (max - min); }
@@ -71,13 +94,16 @@ double rndf() { return ((double)rnd(1000) / 1000.0); }
 // *******************************************************************************
 void Bound(double& val, const double low, const double hi)
 {
-	if (val < low) val = low;
-	else if (val > hi) val = hi;
+	if (val < low)
+		val = low;
+	else if (val > hi)
+		val = hi;
 }
 
 
 // update once every wakeup - avoids lots of calls to Sys_Clock::Milliseconds()
 int64_t gNowMS = 0;
+int64_t gStartTimeMS = 0;
 
 // CVector
 // do the math in doubles to handle rounding
@@ -88,6 +114,20 @@ struct CVector
 	double mX;
 	double mY;
 	
+	CVector& operator+=(const CVector& rhs)
+	{
+		mX += rhs.mX;
+		mY += rhs.mY;
+		return *this;
+	}
+	
+	CVector& operator*(const double& rhs)
+	{
+		mX *= rhs;
+		mY *= rhs;
+		return *this;
+	}
+	
 	// takes a raw angle, or the pre-computed sin & cos
 	static CVector Velocity(const double speed, const double angle, std::pair<double, double> trig = {0.0f,0.0f})
 	{
@@ -96,6 +136,21 @@ struct CVector
 		return CVector(speed * sin_, -(speed * cos_));
 	}
 };
+	
+// *******************************************************************************
+// 	METHOD:	Distance - util
+// *******************************************************************************
+double Distance(const pong::CVector& p1, const pong::CVector& p2)
+{
+	const double distanceSquared = std::pow((p1.mX - p2.mX), 2) + std::pow((p1.mY - p2.mY), 2);
+	return sqrt(distanceSquared);
+}
+
+// *******************************************************************************
+double DistanceSq(const pong::CVector& p1, const pong::CVector& p2)
+{
+	return std::pow((p1.mX - p2.mX), 2) + std::pow((p1.mY - p2.mY), 2);
+}
 
 // CState
 struct CState
@@ -109,7 +164,7 @@ struct CState
 	
 	void Log()
 	{
-		printf("CState mPos: (%d,%d), mVel: (%d,%d), mAcc: (%d,%d) \n",
+		printf("CState mPos: (%f,%f), mVel: (%f,%f), mAcc: (%f,%f) \n",
 			  mPos.mX, mPos.mY, mVel.mX, mVel.mY, mAcc.mX, mAcc.mY );
 	}
 		
@@ -135,8 +190,10 @@ enum EObjectType
 	eShipFragment	= 1 << 3,
 	eIcon			= 1 << 4,
 	eVector			= 1 << 5,
-	eGround			= 1 << 6,
-	eFlatEarth		= 1 << 7,
+	eChaser			= 1 << 6,
+	eGround			= 1 << 7,
+	eFlatEarth		= 1 << 8,
+	eGravity		= 1 << 9,
 	eAll			= 0xFFFF
 };
 
@@ -149,7 +206,7 @@ enum ECollisionType
 
 
 // a fixed-size array of pos/time pairs
-const int32_t kMaxNumVectorPoints = 16;
+const int32_t kMaxNumVectorPoints = 32;
 typedef std::pair<CVector, int64_t> VectorPoint;
 typedef VectorPoint VectorPath[kMaxNumVectorPoints];
 struct VectorPathElement
@@ -159,8 +216,9 @@ struct VectorPathElement
 	int64_t mPauseTime;
 };
 
-const int32_t kMutantPathSize = 8;
-VectorPathElement MutantPath[kMutantPathSize] = {	{{100,40},0,2000}, {{100,60},200,1000}, {{110,60},100,500}, {{90,60},100,400},
+const int32_t kMutantPathSize = 12;
+VectorPathElement MutantPath[kMutantPathSize] = {	{{200,40},0,2000}, {{200,100},200,1000}, {{450,60},100,500}, {{350,60},100,400},
+													{{500,60},100,400}, {{200,60},100,300}, {{500,60},100,300}, {{300,60},100,300},
 													{{110,60},100,300}, {{90,60},100,500}, {{160,60},100,400}, {{80,120},100,1000}};
 
 
@@ -187,10 +245,14 @@ public:
 		mReadyAfterMS(0),
 		mNumAnimates(0),
 		mReady(true),
-		mImageRef(nullptr),
+		mHasFriction(true),
+		mUsesGravity(false),
+		mBoundVelocity(true),
+		mMass(1.0),
+		mImage(nullptr),
 		mImageName(""),
-		mImageWidth(0),
-		mImageHeight(0),
+		mWidth(0),
+		mHeight(0),
 		mNext(nullptr),
 		mInUse(true),
 		mAngle(0.0),
@@ -201,8 +263,6 @@ public:
 		mVectorIndex(0),
 		mNumVectorPoints(0),
 		mLastVectorPointMS(0),
-		mWidth(0),
-		mHeight(0),
 		mHasTriggeredNext(false)
 	{
 		this->Init();
@@ -215,15 +275,16 @@ public:
 	
 	void		Animate(const double diffSec);
 	void		AnimateShip();
+	void		AnimateChaser();
 	void		Draw(Graphics& g);
 	void		DrawShip(Graphics& g);
 	void		DrawGroundObject(Graphics& g);
-	void		DrawImage(Graphics& g);
 	
-	std::string			GetName() const;
-	pong::EObjectType	Type() { return mType; }
+	std::string		GetName() const { return mName; }
+	pong::EObjectType	Type() const { return mType; }
 	
 	void			CalcPosition(const double diffSec);
+	void			UpdateAcceleration(const double diffSec);
 	void			VectorCalc(const double diffSec);
 	static bool		CollidedWith(CRect& a, CRect& b);
 	bool			CollidedWith(CObject& other);
@@ -250,6 +311,10 @@ public:
 	pong::CVector	Pos() const { return mState.mPos; }
 	pong::CVector	Vel() const { return mState.mVel; }
 	pong::CVector	Acc() const { return mState.mAcc; }
+	double 			GetMass() const { return mMass; }
+	void			ApplyAcc(const pong::CVector& acc) { mState.mAcc.mX += acc.mX; mState.mAcc.mY += acc.mY;}
+	void			SetMass(double mass) { mMass = mass; mHasFriction = false; mBoundVelocity = false; }
+	void			SetName(std::string name) { mName = name; }
 	
 	// a point 25 pixels above the center
 	pong::CVector	FlatEarthDockPoint() const { return pong::CVector(mState.mPos.mX, mState.mPos.mY - 25); }
@@ -264,7 +329,7 @@ public:
 	std::vector<Cmn_Point32> GetVertices() { return mVertices; }
 	
 	// stop gravity if the ship is on the ground
-	bool 			IsOnGround() const { return (mState.mPos.mY >= (IPongView::kGridHeight - 50)); }
+	bool 			IsOnGround() const { return (mState.mPos.mY >= (pong::kGridHeight - 50)); }
 	
 	// for vector objects
 	pong::VectorPath&	GetVectorPath() { return mVectorPath; }
@@ -284,7 +349,6 @@ public:
 	// coming from a pool
 	void Free()
 	{
-		mImageRef = nullptr;
 		mInUse = false;
 	}
 	
@@ -298,7 +362,12 @@ protected:
 	std::vector<Cmn_Point32>	mVertices;
 	int32_t						mNumAnimates;
 	bool						mReady;
+	bool						mHasFriction;
+	bool						mUsesGravity;
+	bool						mBoundVelocity;
 	Colour						mColor;
+	double						mMass;
+	std::string					mName;
 	
 	// only used by bullets to support CCD (Continuous Collision Detection)
 	#define						kNumPreviousPositions 8
@@ -308,10 +377,12 @@ private:
 	void Init();
 	
 	// image data
-	DFW_ImageRef mImageRef;
+	Image* mImage;
 	std::string mImageName;
-	int32_t mImageWidth;
-	int32_t mImageHeight;
+	
+	// object size
+	int32_t mWidth;
+	int32_t mHeight;
 	
 	// for use with CObjectPool
 	CObject* mNext;
@@ -335,8 +406,6 @@ private:
 	// for ground objects
 	pong::CVector	mLeftPoint;
 	pong::CVector	mRightPoint;
-	int32_t			mWidth;
-	int32_t			mHeight;
 	bool			mHasTriggeredNext;
 };
 
@@ -345,7 +414,7 @@ private:
 class CObjectPool
 {
 public:
-	static const int32_t kMaxNumObjects = 256;
+	static const int32_t kMaxNumObjects = 1024;
 	
 	// Init
 	void Init()
@@ -385,6 +454,7 @@ public:
 	// Animate - animates all the objects
 	void Animate(double diffSec)
 	{
+		mNumActiveObjects = 0;
 		// go through the pool looking for ready objects
 		for (int k = 0; k < kMaxNumObjects; k++)
 		{
@@ -393,6 +463,7 @@ public:
 			if (!obj.IsActive())
 				continue;
 			
+			mNumActiveObjects++;
 			obj.Animate(diffSec);
 			
 			// if the object is now dead, remove it from the pool
@@ -427,7 +498,7 @@ public:
 	}
 	
 	// CheckCollision
-	void CheckCollision(CObject& obj1, CObject& obj2)
+	static void CheckCollision(CObject& obj1, CObject& obj2)
 	{
 		if (obj1.CollidedWith(obj2))
 		{
@@ -462,6 +533,9 @@ public:
 					continue;
 				
 				this->CheckCollision(obj1, obj2);
+				
+				if (obj1.Is(pong::eGravity) && obj2.Is(pong::eGravity))
+					this->ApplyGravity(obj1, obj2);
 			}
 		}
 	}
@@ -496,10 +570,14 @@ public:
 		}
 	}
 	
+	int32_t GetNumActiveObjects() const { return mNumActiveObjects; }
+	void ApplyGravity(CObject& obj1, CObject& obj2);
+	
 private:
 	CObject mPool[kMaxNumObjects];
 	CObject* mFirstOpenSlot;
 	std::list<CObject*> mGroundObjectList;
+	int32_t mNumActiveObjects;
 };
 
 // TPongView
@@ -513,6 +591,7 @@ public:
 		mNextNewFallingIconObjectMS(0),
 		mNextNewCrawlingIconObjectMS(0),
 		mNextNewVectorIconObjectMS(0),
+		mNextNewChaserObjectMS(0),
 		mVectorObjectActive(false),
 		mShowGuideEndMS(0),
 		mOneTimeGuideExplosion(true),
@@ -523,21 +602,27 @@ public:
 		mDeaths(0),
 		mNumSmartBombs(4),
 		mIconCount(0),
-		mVectorCount(0)
+		mVectorCount(0),
+		mAutoSmartBombMode(false)
 	{}
 	~TPongView() {}
 	
 	// public interface
 	virtual void Draw(Graphics& g) override;
+	virtual int32_t GetRefreshrateMS() override { return pong::kRefreshRateMS; }
+	virtual int32_t GetGridWidth() override { return pong::kGridWidth; };
+	virtual int32_t GetGridHeight() override { return pong::kGridHeight; };
 	void Animate();
 	void CreateNewObjects();
 	void UpdateLevel();
 	void CheckDockedToEarth();
 	void DoExplosions();
+	bool CheckKeyPress(char key, int32_t throttleMS);
 	void VectorObjectDied();
+	void ChaserObjectDied();
 	bool LevelPause() const { return mShowLevelTextUntilMS != 0; }
-	int32_t GetGridWidth() const { return kGridWidth; }
-	int32_t GetGridHeight() const { return kGridHeight; }
+	int32_t GetGridWidth() const { return pong::kGridWidth; }
+	int32_t GetGridHeight() const { return pong::kGridHeight; }
 	CObjectPool& GetObjectPool() { return mObjectPool; }
 	void AddKill() { mKills++; }
 	void AddDeath() { mDeaths++; }
@@ -547,8 +632,11 @@ public:
 	CObject* GetShipObject() const { return mShipObject; }
 	void NewGroundObject(pong::CVector pos);
 	CObject* NewObject(const pong::EObjectType type, const pong::CState state);
-	
-	static double Distance(const pong::CVector& p1, const pong::CVector& p2);
+	std::vector<Image>& GetImages() { return mImages; }
+	Image& GetFlatEarthImage() { return mFlatEarthImage; }
+	Image& GetChaserImage() { return mChaserImage; }
+	pong::CVector& GetChaserPosition();
+	void AddChaserPosition(pong::CVector& vec);
 		
 private:
 	
@@ -557,6 +645,8 @@ private:
 	void			DrawText(Graphics& g);
 	void			NewFallingIconObject();
 	void			NewCrawlingIconObject();
+	void			NewChaserObject();
+	void			NewGravityObject(pong::CVector pos, double mass, std::string name);
 	void			NewVectorIconObject();
 	void			ShootBullet();
 	void			SmartBomb();
@@ -565,10 +655,12 @@ private:
 	
 	CObject*		mShipObject;
 	CObject*		mFlatEarthObject;
+	CObject*		mChaserObject;
 	int64_t			mLastDrawMS;
 	int64_t			mNextNewFallingIconObjectMS;
 	int64_t			mNextNewCrawlingIconObjectMS;
 	int64_t			mNextNewVectorIconObjectMS;
+	int64_t			mNextNewChaserObjectMS;
 	bool			mVectorObjectActive;
 	int64_t			mShowGuideEndMS;
 	bool			mOneTimeGuideExplosion;
@@ -580,6 +672,17 @@ private:
 	int32_t			mNumSmartBombs;
 	int32_t			mIconCount;
 	int32_t			mVectorCount;
+	bool			mAutoSmartBombMode;
+	
+	static const int32_t sChaserPositionMax = 512;
+	int32_t	mChaserPositionIndex;
+	pong::CVector mChaserPositions[sChaserPositionMax];
+	
+	std::vector<Image> 	mImages;
+	Image 				mFlatEarthImage;
+	Image				mChaserImage;
+	Image				mBackgroundImage;
+	std::map<char, int64_t> mLastKeyPressTimeMS;
 	
 	CObjectPool		mObjectPool;
 	
@@ -605,33 +708,89 @@ IPongViewPtr IPongView::Create()
 // *******************************************************************************
 void TPongView::Init()
 {
-	pong::gNowMS = Time::getCurrentTime().toMilliseconds();
+	pong::gStartTimeMS = Time::getCurrentTime().toMilliseconds();
+	pong::gNowMS = pong::gStartTimeMS;
 	mLastDrawMS = pong::gNowMS;
-	mShowGuideEndMS = pong::gNowMS + 4000; // show the guide for 4 seconds
+	mShowGuideEndMS = pong::gNowMS + 1000; // show the guide for 4 seconds
 	
 	mObjectPool.Init();
 	
-	mFlatEarthObject = this->NewObject(pong::eFlatEarth, {{160, 150}, {-8, 0}, {0, 0}, 0, 0});
-	CMN_ASSERT(mFlatEarthObject);
-	mFlatEarthObject->SetReady(false);
 	
-	mShipObject = this->NewObject(pong::eShip, {{float(this->GetGridWidth()/2), float(this->GetGridHeight()-50)}, {0, 0}, {20, 80}, 0, pong::eIcon|pong::eVector|pong::eGround});
-	CMN_ASSERT(mShipObject);
+	// create ship object
+	{
+		const pong::CVector p(float(this->GetGridWidth()/2), float(this->GetGridHeight() - 50));
+		const pong::CVector v(0, 0);
+		const pong::CVector a(20, pong::kNoGravity ? 0 : 80);
+		mShipObject = this->NewObject(pong::eShip, {p, v, a, 0, pong::eIcon|pong::eVector|pong::eGround});
+		CMN_ASSERT(mShipObject);
+		
+		mShipObject->SetNumHitPoints(6);
+	}
 	
-	mShipObject->SetNumHitPoints(6);
+	// populate the mImages vector
+	{
+		DirectoryIterator dir_iter(File(pong::cImagesFolderDir), false);
+		while(dir_iter.next())
+		{
+			File file(dir_iter.getFile());
+			if (file.getFileExtension() == ".png")
+			{
+				const Image& img = ImageFileFormat::loadFrom(file);
+				if (img.isValid())
+					mImages.push_back(img);
+			}
+		}
+	}
+	
+	// create the flat earth object
+	{
+		mFlatEarthImage = ImageFileFormat::loadFrom(File(pong::cFlatEarthImagePath));
+		CMN_ASSERT(mFlatEarthImage.isValid());
+		
+		const pong::CVector p(float(this->GetGridWidth()/2), float(this->GetGridHeight() - 350));
+		const pong::CVector v(-20, 0); // flat earth moves to the left
+		const pong::CVector a(0, 0);
+		mFlatEarthObject = this->NewObject(pong::eFlatEarth, {p, v, a, 0, 0});
+		CMN_ASSERT(mFlatEarthObject);
+		mFlatEarthObject->SetReady(true);
+	}
+	
+	{
+		mChaserImage = ImageFileFormat::loadFrom(File(pong::cChaserImagePath));
+		CMN_ASSERT(mChaserImage.isValid());
+		//mNextNewChaserObjectMS = pong::gNowMS + 5000;
+	}
+	
+	{
+		mBackgroundImage = ImageFileFormat::loadFrom(File(pong::cBackgroundImagePath));
+		CMN_ASSERT(mBackgroundImage.isValid());
+	}
+	
+	NewGravityObject({100, 100}, 1.0, "Obj 1");
+	NewGravityObject({300, 200}, 1.0, "Obj 2");
+	NewGravityObject({600, 500}, 4.0, "Obj 3");
 }
 
 // ******************************************************************************* 
 // 	METHOD:	Draw
-//   - called from TXYGridView::Draw()
-//   - will come randomly, but will be fast since we call ForceRedraw a lot ^^
 //  tbarram 5/5/17
 // *******************************************************************************
 void TPongView::Draw(Graphics& g)
 {
+	// update the global now
+	pong::gNowMS = Time::getCurrentTime().toMilliseconds();
+	
+	if (mBackgroundImage.isValid())
+	{
+		//g.setTiledImageFill(mBackgroundImage, 0, 0, 1.0f);
+		//g.fillAll();
+		//g.drawImageAt(mBackgroundImage, 0, 0);
+	}
+	
+	// calc the new positions, check keypresses, etc.
 	this->Animate();
 	
-	// do the drawing
+	// draw all the objects
 	mObjectPool.Draw(g);
 	
 	this->DrawText(g);
@@ -658,17 +817,20 @@ void TPongView::DrawText(Graphics& g)
 	}
 	else
 	{
-		// draw text box in bottom right corner
-		const CRect rect(0, 0, 600, 1500); // x,y,w,h
+		const int32_t elapsedSec = (int32_t)(pong::gNowMS - pong::gStartTimeMS) / 1000;
+		// draw text box in bottom right corner  GetNumActiveObjects
+		const CRect rect(20, this->GetGridHeight() - 20, this->GetGridWidth(), 200); // x,y,w,h
 		const std::string text =
-				"level: " + std::to_string(mLevel) +
-				"\nkills: " + std::to_string(mKills) +
-				"\ndeaths: " + std::to_string(mDeaths) +
-				"\nhp: " +	std::to_string(mShipObject->GetNumHitPoints()) +
-				"\nbombs: " + std::to_string(mNumSmartBombs);
+				"\nlevel: " + std::to_string(mLevel) +
+				"\t\tkills: " + std::to_string(mKills) +
+				"\t\tdeaths: " + std::to_string(mDeaths) +
+				"\t\thp: " +	std::to_string(mShipObject->GetNumHitPoints()) +
+				"\t\tbombs: " + std::to_string(mNumSmartBombs) +
+				"\t\ttime: " + std::to_string(elapsedSec) + " sec" +
+				"\t\tobjects: " + std::to_string(mObjectPool.GetNumActiveObjects());
 		
-		g.setColour(Colours::lawngreen);
-		//g.drawText(text, rect, Justification::right, true);
+		g.setColour(Colours::honeydew);
+		g.drawFittedText(text, rect, Justification::left, true);
 	}
 	
 	// show level text
@@ -682,40 +844,53 @@ void TPongView::DrawText(Graphics& g)
 }
 
 // ******************************************************************************* 
-// 	METHOD:	Distance
-// *******************************************************************************
-double TPongView::Distance(const pong::CVector& p1, const pong::CVector& p2)
-{
-	const double distanceSquared = std::pow((p1.mX - p2.mX), 2) + std::pow((p1.mY - p2.mY), 2);
-	return sqrt(distanceSquared);
-}
-
-// ******************************************************************************* 
 // 	METHOD:	DoExplosions
 //   - do a bunch of explosions in the middle of the (left) screen
 //  tbarram 5/14/17
 // *******************************************************************************
 void TPongView::DoExplosions()
 {
-	const std::list<pong::CVector> explosions = {{100,65},{120,80},{130,110},{110,120},{150,110},{145,55},{170,85},{180,120},{190,110},{210,60}};
-	for (const auto& e : explosions)
+	// tweak these 2 settings to adjust explosions
+	const int32_t kNumExplosions = 70;
+	const int32_t rangeH = 700;
+	
+	const int32_t mid = this->GetGridWidth() / 2;
+	const int32_t startingH = mid - (rangeH/2);
+	
+	for (int32_t k = 0; k < kNumExplosions; k++)
+	{
+		const pong::CVector e = {double(startingH + pong::rnd(rangeH)), double(pong::rnd(40, 100))};
 		this->Explosion(e);
+	}
+}
+
+// *******************************************************************************
+bool TPongView::CheckKeyPress(char key, int32_t throttleMS)
+{
+	if (KeyPress::isKeyCurrentlyDown(key) && ((pong::gNowMS - mLastKeyPressTimeMS[key]) > throttleMS))
+	{
+		mLastKeyPressTimeMS[key] = pong::gNowMS;
+		return true;
+	}
+	else
+		return false;
 }
 
 // ******************************************************************************* 
 // 	METHOD:	Animate
 //   - main wakeup
 //   - this is what drives all the object updates, state changes, etc.
-//   - will come randomly, but will be fast since we call ForceRedraw a lot
+//   - will come randomly, but will be fast since we call repaint a lot
 //  tbarram 12/3/16
 // *******************************************************************************
 void TPongView::Animate()
 {
-	// update the global now
-	pong::gNowMS = Time::getCurrentTime().toMilliseconds();
-	
 	// get the time diff since last wakeup
-	const double diffSec = (double)(pong::gNowMS - mLastDrawMS) / 1000.0;
+	const double diffMS = pong::gNowMS - mLastDrawMS;
+	if (diffMS < pong::kAnimateThrottleMS)
+		return;
+	
+	const double diffSec = diffMS / 1000.0;
 	mLastDrawMS = pong::gNowMS;
 	
 	// see if it's time for the next level
@@ -733,15 +908,18 @@ void TPongView::Animate()
 	mObjectPool.CheckCollisionsWithGround();
 	
 	// shoot
-	if (KeyPress::isKeyCurrentlyDown('x'))
+	if (this->CheckKeyPress('x', 0) || this->CheckKeyPress(KeyPress::spaceKey, 0))
 		this->ShootBullet();
 	
 	// smart bomb
-	if (KeyPress::isKeyCurrentlyDown('s'))
+	if (KeyPress::isKeyCurrentlyDown('s') || mAutoSmartBombMode)
 		this->SmartBomb();
 	
 	// see if we should dock
 	this->CheckDockedToEarth();
+	
+	if (this->CheckKeyPress('o', 700))
+		mAutoSmartBombMode = !mAutoSmartBombMode;
 }
 
 // ******************************************************************************* 
@@ -752,11 +930,11 @@ void TPongView::CheckDockedToEarth()
 {
 	if (!mShipObject->IsDockedToEarth())
 	{
-		const double d = Distance(mFlatEarthObject->FlatEarthDockPoint(), mShipObject->Pos());
+		const double d = pong::Distance(mFlatEarthObject->FlatEarthDockPoint(), mShipObject->Pos());
 		
 		// if we're close to the earth, and we're moving slowly and pointing up, then dock
-		if (d < 15 && fabs(mShipObject->GetAngle()) < pong::PI/4 &&
-			fabs(mShipObject->Vel().mX) < 16 && fabs(mShipObject->Vel().mY) < 16)
+		if (d < 50 && fabs(mShipObject->GetAngle()) < pong::PI/4 &&
+			fabs(mShipObject->Vel().mX) < 32 && fabs(mShipObject->Vel().mY) < 32)
 		{
 			mShipObject->SetDockedToEarth();
 			mNumSmartBombs++;
@@ -777,6 +955,10 @@ void TPongView::UpdateLevel()
 		this->DoExplosions();
 	}
 	
+	// L advances level
+	if (this->CheckKeyPress('L', 700))
+		mKills = mNextLevelKills;
+	
 	// update level based on kills
 	if (mKills >= mNextLevelKills)
 	{
@@ -790,13 +972,14 @@ void TPongView::UpdateLevel()
 			mShowLevelTextUntilMS = pong::gNowMS + 4000;
 		}
 		
-		static const bool kNoObjects = true;
 		int32_t killsToAdvance = 100000;
 		switch (mLevel)
 		{
 			case 1:
+				this->NewGroundObject({(double)this->GetGridWidth(), (double)this->GetGridHeight() - 50});
+				
 				// level 1 - falling objects only
-				if (!kNoObjects)
+				if (!pong::kNoObjects)
 				{
 					mNextNewFallingIconObjectMS = mShowGuideEndMS;
 					killsToAdvance = 15;
@@ -818,10 +1001,10 @@ void TPongView::UpdateLevel()
 			case 4:
 			{
 				// start the ground
-				//this->NewGroundObject({(double)this->GetGridWidth(), 195});;
+				//this->NewGroundObject({(double)this->GetGridWidth(), (double)this->GetGridHeight() - 20});
 				
 				// no objects for 10 seconds, then start the earth object, vector + crawling
-				//mFlatEarthObject->SetReadyAfter(pong::gNowMS + 15000);
+				mFlatEarthObject->SetReadyAfter(pong::gNowMS + 3000);
 				mNextNewFallingIconObjectMS = 0;
 				mNextNewVectorIconObjectMS = pong::gNowMS + 10000;
 				mNextNewCrawlingIconObjectMS = pong::gNowMS + 10000;
@@ -854,7 +1037,8 @@ void TPongView::CreateNewObjects()
 		const int32_t kMultiplier = (mLevel - 1);
 		const int32_t fixedMS = std::max(500 - (kMultiplier * 100), 100);
 		const int32_t randomMaxMS = std::max(1200 - (kMultiplier * 100), 500);
-		mNextNewFallingIconObjectMS = pong::gNowMS + (fixedMS + (pong::rnd(randomMaxMS)));
+		const int32_t nextMS = (fixedMS + (pong::rnd(randomMaxMS)));
+		mNextNewFallingIconObjectMS = pong::gNowMS + nextMS;
 	}
 	
 	// create a new crawling icon object if it's time, and schedule the next one
@@ -869,6 +1053,12 @@ void TPongView::CreateNewObjects()
 	{
 		this->NewVectorIconObject();
 	}
+	
+	if (mNextNewChaserObjectMS && pong::gNowMS > mNextNewChaserObjectMS)
+	{
+		mNextNewChaserObjectMS = 0;
+		this->NewChaserObject();
+	}
 }
 
 // ******************************************************************************* 
@@ -878,6 +1068,18 @@ void TPongView::CreateNewObjects()
 CObject* TPongView::NewObject(const pong::EObjectType type, const pong::CState state)
 {
 	return mObjectPool.NewObject(this, type, state);
+}
+
+// *******************************************************************************
+// 	METHOD:	NewGravityObject
+// *******************************************************************************
+void TPongView::NewGravityObject(pong::CVector pos, double mass, std::string name)
+{
+	const pong::CVector v(0, 0);
+	const pong::CVector a(0, 0);
+	CObject* obj = this->NewObject(pong::eGravity, {pos, v, a, 0, 0});
+	obj->SetMass(mass);
+	obj->SetName(name);
 }
 
 // ******************************************************************************* 
@@ -903,7 +1105,7 @@ void TPongView::NewFallingIconObject()
 	const pong::CVector p(pong::rnd(horizMaxStart), 0);
 	const pong::CVector v(0, 0);
 	const pong::CVector a(0, 5 + pong::rnd(100));
-	const int32_t killedBy = pong::eBullet | pong::eFragment | pong::eShip | pong::eShipFragment | pong::eGround;
+	const int32_t killedBy = pong::eBullet | pong::eShip | pong::eGround;
 	this->NewObject(pong::eIcon, {p, v, a, 0, killedBy});
 	mIconCount++;
 }
@@ -918,8 +1120,18 @@ void TPongView::NewCrawlingIconObject()
 	const pong::CVector p(this->GetGridWidth(), 20 + pong::rnd(20));
 	const pong::CVector v(-(30 + pong::rnd(50)), 0);
 	const pong::CVector a(-(5 + pong::rnd(50)), 0);
-	const int32_t killedBy = pong::eBullet | pong::eFragment | pong::eShip | pong::eShipFragment | pong::eGround;
+	const int32_t killedBy = pong::eBullet | pong::eShip | pong::eGround;
 	this->NewObject(pong::eIcon, {p, v, a, 0, killedBy});
+}
+
+// *******************************************************************************
+void TPongView::NewChaserObject()
+{
+	const pong::CVector p(this->GetGridWidth()/2, 200);
+	const pong::CVector v(0, 0);
+	const pong::CVector a(0, 0);
+	const int32_t killedBy = pong::eBullet;
+	this->NewObject(pong::eChaser, {p, v, a, 0, killedBy});
 }
 
 // ******************************************************************************* 
@@ -949,16 +1161,15 @@ void TPongView::NewVectorIconObject()
 	else
 	{
 		// else do a random path
-		const int32_t r5 = pong::rnd(5);
-		const int32_t kNumPoints = r5 < 3 ? 5 : r5 < 4 ? 6 : 7;
+		const int32_t kNumPoints = 4;
 
 		// add the random points in the path
 		for (int k = 0; k < kNumPoints; k++)
 		{
 			const double horiz = 20 + pong::rnd(this->GetGridWidth() - 40);
-			const int32_t maxVert = k <= 3 ? 100 : 160; // start in the top half
+			const int32_t maxVert = k <= 3 ? 200 : 760; // start in the top half
 			const double vert = 10 + pong::rnd(maxVert - 10);
-			const int64_t timeMoving = 200 + pong::rnd(1000);
+			const int64_t timeMoving = 200 + pong::rnd(2000);
 			const int64_t timePausing = 500 + pong::rnd(2000);
 			
 			obj->AddVectorPathElement({{horiz, vert}, timeMoving, timePausing});
@@ -973,10 +1184,10 @@ void TPongView::NewVectorIconObject()
 void TPongView::ShootBullet()
 {
 	// start the bullet at the front of the ship in the ship's direction
-	static const double speed = 400.0;
+	static const double speed = 800.0; // 400.0
 	const pong::CVector v = pong::CVector::Velocity(speed, 0, {mShipObject->GetSin(), mShipObject->GetCos()});
 	const pong::CVector a(0,0); // bullets have no acceleration, just a constant velocity
-	const int64_t lifetime = 1000; // 1 second
+	const int64_t lifetime = 5000; // 1 second
 	this->NewObject(pong::eBullet, {mShipObject->GetFront(), v, a, lifetime, pong::eIcon | pong::eVector});
 }
 
@@ -988,10 +1199,10 @@ void TPongView::SmartBomb()
 {
 	if (!this->LevelPause())
 	{
-		if (mNumSmartBombs > 0)
-			mNumSmartBombs--;
-		else
-			return;
+		//if (mNumSmartBombs > 0)
+		//	mNumSmartBombs--;
+		//else
+		//	return;
 	}
 
 	mObjectPool.KillAllObjectsOfType(pong::eIcon | pong::eVector);
@@ -1010,13 +1221,51 @@ void TPongView::VectorObjectDied()
 	}
 }
 
+// *******************************************************************************
+void TPongView::ChaserObjectDied()
+{
+	mNextNewChaserObjectMS = pong::gNowMS + 10000;
+}
+
+// *******************************************************************************
+pong::CVector& TPongView::GetChaserPosition()
+{
+	// make chaserDistance get bigger and smaller
+	const int32_t chaserDistance = 30;
+	const int32_t index = (mChaserPositionIndex + (sChaserPositionMax - chaserDistance)) % sChaserPositionMax;
+	return mChaserPositions[index];
+}
+
+// *******************************************************************************
+void TPongView::AddChaserPosition(pong::CVector& vec)
+{
+	mChaserPositions[mChaserPositionIndex] = vec;
+	mChaserPositionIndex = (mChaserPositionIndex + 1) % sChaserPositionMax;
+}
+
+// *******************************************************************************
+void CObjectPool::ApplyGravity(CObject& obj1, CObject& obj2)
+{
+	const double G = 9800;
+	const double d2 = pong::DistanceSq(obj1.Pos(), obj2.Pos());
+	const double g = Cmn_Max((G * obj1.GetMass() * obj2.GetMass()) / d2, 0.1);
+	const double angleRadians = ::atan2(obj1.Pos().mX - obj2.Pos().mX, obj1.Pos().mY - obj2.Pos().mY);
+	const double degrees = (angleRadians * 180) / pong::PI;
+	printf("angle between %s & %s: %0.2f deg, g: %0.2f \n", obj1.GetName().c_str(), obj2.GetName().c_str(), degrees, g);
+	pong::CVector a(g * ::sin(angleRadians), (g * ::cos(angleRadians)));
+	pong::CVector a1(-a.mX, -a.mY);
+	
+	obj1.ApplyAcc(a1);
+	obj2.ApplyAcc(a);
+}
+
 // ******************************************************************************* 
 // 	METHOD:	ShipDestroyed
 //  tbarram 5/8/17
 // *******************************************************************************
 void CObject::ShipDestroyed()
 {
-	mState.mPos = {float(mPongView->GetGridWidth()/2), float(mPongView->GetGridHeight()-50)};
+	mState.mPos = {float(mPongView->GetGridWidth()/2), float(mPongView->GetGridHeight() - 400)};
 	mState.mVel = {0, -20}; // start with a little upward thurst since gravity will quickly kick in
 	mState.mAcc = {20, 80}; // reset (does this ever change?)
 	mAngle = 0.0;
@@ -1024,29 +1273,6 @@ void CObject::ShipDestroyed()
 	this->SetNumHitPoints(6); // reset
 	mVertices.clear();
 	mDockedToEarthMS = 0;
-}
-
-// ******************************************************************************* 
-// 	METHOD:	GetName
-// *******************************************************************************
-std::string	CObject::GetName() const
-{
-	switch (mType)
-	{
-		case pong::eShip:
-			return "ship";
-		case pong::eBullet:
-			return "bullet";
-		case pong::eFragment:
-			return "fragment";
-		case pong::eShipFragment:
-			return "shipFragment";
-		case pong::eIcon:
-		case pong::eVector:
-			return mImageName;
-		default:
-			return "error bad object";
-	}
 }
 
 // ******************************************************************************* 
@@ -1058,6 +1284,9 @@ bool CObject::IsAlive() const
 {
 	bool alive = true;
 	
+	if (this->Is(pong::eGravity))
+		return true;
+	
 	if (this->Is(pong::eShip))
 		return true;
 	
@@ -1067,16 +1296,12 @@ bool CObject::IsAlive() const
 	if (mState.mExpireTimeMS && pong::gNowMS > mState.mExpireTimeMS)
 		alive = false;
 	
-	// vector objects die when they run out of points
-	if (this->Is(pong::eVector) && (mVectorIndex >= this->GetNumVectorPoints()))
-		alive = false;
-	
 	// objects that leave the bottom edge never come back
-	if (mState.mPos.mY >= IPongView::kGridHeight)
+	if (mState.mPos.mY >= pong::kGridHeight)
 		alive = false;
 	
 	// all non-ship objects die when they disappear
-	if (!this->Is(pong::eShip) && (mState.mPos.mX < -10 || mState.mPos.mX > (mPongView->GetGridWidth() + 10)))
+	if (!this->Is(pong::eShip) && !this->Is(pong::eChaser) && (mState.mPos.mX < -10 || mState.mPos.mX > (mPongView->GetGridWidth() + 10)))
 		alive = false;
 	
 	if (this->IsDestroyed())
@@ -1093,6 +1318,9 @@ void CObject::Died()
 {
 	if (this->Is(pong::eVector))
 		mPongView->VectorObjectDied();
+	
+	if (this->Is(pong::eChaser))
+		mPongView->ChaserObjectDied();
 }
 
 // ******************************************************************************* 
@@ -1102,15 +1330,13 @@ void CObject::Died()
 // *******************************************************************************
 void TPongView::Explosion(const pong::CVector& pos, bool isShip)
 {
-	// mostly 5 fragments (60%), sometimes 6 or 7 (20% each)
-	const int32_t r5 = pong::rnd(5);
-	const int32_t kNumFrags = isShip ? 22 : (r5 < 3 ? 5 : r5 < 4 ? 6 : 7);
+	const int32_t kNumFrags = isShip ? 22 : pong::rnd(6, 12);
 	const double kAngleInc = 2 * pong::PI / kNumFrags;
 	
 	for (int32_t j = 0; j < kNumFrags; j++)
 	{
 		// give each frag a random speed
-		const double speed = pong::rnd(isShip ? 10 : 18, 28);
+		const double speed = pong::rnd(30, 80);
 		
 		// send each of the fragments at an angle equally spaced around the unit
 		// circle, with some randomness
@@ -1131,6 +1357,22 @@ void TPongView::Explosion(const pong::CVector& pos, bool isShip)
 	}
 }
 
+// *******************************************************************************
+void CObject::UpdateAcceleration(const double diffSec)
+{
+	if (mHasFriction)
+	{
+		// switch horiz acceleration so it acts like friction
+		const double adjustedAccel = mState.mVel.mX > 0 ? -1 : 1;
+		mState.mAcc.mX *= (adjustedAccel);
+	}
+	
+	if (mUsesGravity)
+	{
+		
+	}
+}
+
 // ******************************************************************************* 
 // 	METHOD:	CalcPosition
 //   - apply acceleration to velocity and velocity to position
@@ -1146,22 +1388,20 @@ void CObject::CalcPosition(const double diffSec)
 		return;
 	}
 	
-	// apply vertical acceleration (gravity)
+	// apply acceleration to velocity
+	//mState.mVel += (mState.mAcc * diffSec);
+	mState.mVel.mX += (mState.mAcc.mX * diffSec);
 	mState.mVel.mY += (mState.mAcc.mY * diffSec);
 	
-	// apply horizontal acceleration (friction) - it operates on abs value of velocity
-	// so it slows things down whichever way they're going
-	if (fabs(mState.mVel.mX) < 1.0)
-		mState.mVel.mX = 0.0; // clamp to zero when it gets close to avoid jitter
-	else
+	if (mBoundVelocity)
 	{
-		const double adjustedAccel = mState.mVel.mX > 0 ? -1 : 1;
-		mState.mVel.mX += (mState.mAcc.mX * diffSec * adjustedAccel);
+		if (fabs(mState.mVel.mX) < 1.0)
+			mState.mVel.mX = 0.0; // clamp to zero when it gets close to avoid jitter
+		
+		// bound velocity - needed?
+		pong::Bound(mState.mVel.mX, -1000, 1000);
+		pong::Bound(mState.mVel.mY, -1000, 1000);
 	}
-	
-	// bound velocity - needed?
-	pong::Bound(mState.mVel.mX, -1000, 1000);
-	pong::Bound(mState.mVel.mY, -1000, 1000);
 	
 	if (this->Is(pong::eBullet))
 	{
@@ -1174,16 +1414,17 @@ void CObject::CalcPosition(const double diffSec)
 			const double inc = diffSecInc * k;
 			const double v = mState.mPos.mY + (mState.mVel.mY * inc);
 			const double h = mState.mPos.mX + (mState.mVel.mX * inc);
-			mPreviousRect[k] = CRect(h, v, h + mImageWidth, v + mImageHeight);
+			mPreviousRect[k] = CRect(h, v, h + mWidth, v + mHeight);
 		}
 	}
 
 	// apply velocity to position
-	mState.mPos.mY += (mState.mVel.mY * diffSec);
+	//mState.mPos += (mState.mVel * diffSec);
 	mState.mPos.mX += (mState.mVel.mX * diffSec);
+	mState.mPos.mY += (mState.mVel.mY * diffSec);
 	
 	// collision rect - based on top left
-	mRect = CRect(mState.mPos.mX, mState.mPos.mY, mState.mPos.mX + mImageWidth, mState.mPos.mY + mImageHeight);
+	mRect = CRect(mState.mPos.mX, mState.mPos.mY, mWidth, mHeight);
 	
 	if (this->WrapsHorizontally())
 	{
@@ -1201,14 +1442,11 @@ void CObject::CalcPosition(const double diffSec)
 		{
 			mState.mVel.mY = 0;
 			
-			// setting this to zero is interesting - figure out a way to
-			// male it part of the game - this removes gravity and allows
-			// you to hover
-			//mState.mAcc.mY = 0;
+			// setting this to zero is interesting - figure out a way to make it
+			// part of the game - this removes gravity and allows you to hover
+			if (pong::kNoGravity)
+				mState.mAcc.mY = 0;
 		}
-		
-		// bound vertical position
-		//pong::Bound(mState.mPos.mY, -300, 178);
 	}
 }
 
@@ -1237,9 +1475,9 @@ bool CObject::CollidedWith(CObject& other)
 	
 	if (false/*bullet*/)
 	{
-		for (int32_t k = 0; k < kNumPreviousPositions; k++)
-			if (this->CollidedWith(bullet->mPreviousRect[k], nonBullet->mRect))
-				return true;
+		//for (int32_t k = 0; k < kNumPreviousPositions; k++)
+			//if (this->CollidedWith(bullet->mPreviousRect[k], nonBullet->mRect))
+				//return true;
 	}
 	else
 	{
@@ -1254,10 +1492,7 @@ bool CObject::CollidedWith(CObject& other)
 // *******************************************************************************
 bool CObject::CollidedWith(CRect& a, CRect& b)
 {
-	return !(	a.getX() > b.getRight() ||
-				a.getRight() < b.getX() ||
-				a.getY() > b.getBottom() ||
-				a.getBottom() < b.getY());
+	return !a.getIntersection(b).isEmpty();
 }
 
 // ******************************************************************************* 
@@ -1278,7 +1513,7 @@ bool CObject::IsUnderLine(pong::CVector right, pong::CVector left, pong::CVector
 bool CObject::CollidedWithGround(CObject& ground, CObject& obj)
 {
 	const std::vector<Cmn_Point32> vertices = obj.GetVertices();
-	for (const auto v : vertices)
+	for (const auto& v : vertices)
 		if (IsUnderLine(ground.mRightPoint, ground.mLeftPoint, pong::CVector(v.x, v.y)))
 			return true;
 		
@@ -1291,7 +1526,13 @@ bool CObject::CollidedWithGround(CObject& ground, CObject& obj)
 // *******************************************************************************
 void CObject::Collided(pong::ECollisionType type)
 {
-	if (type == pong::eSmart || type == pong::eWithGround)
+	if (this->Is(pong::eBullet))
+	{
+		mHitPoints = 0;
+		return;
+	}
+	
+	if (type == pong::eSmart || type == pong::eWithGround || this->Is(pong::eChaser))
 		mHitPoints = 1;
 	
 	if (mHitPoints > 0 && --mHitPoints == 0)
@@ -1344,12 +1585,12 @@ void CObject::AnimateShip()
 	CPoint pos(mState.mPos.mX, mState.mPos.mY);
 	
 	static const int32_t kBaseWidth = 16;
-	static const int32_t kHeight = 24;
+	static const int32_t kHeight = 8; //24;
 	static const int32_t kHalfBaseWidth = kBaseWidth / 2;
 	static const int32_t kHalfHeight = kHeight / 2;
 	static const int32_t kCenterIndent = 4;
 	static const int32_t kThrustWidth = (kBaseWidth / 4) - 1;
-	static const int32_t kThrustHeight = kHalfHeight - 2;
+	static const int32_t kThrustHeight = 8; //kHalfHeight - 2;
 	
 	// cache mFront for bullet origin
 	mFront = CPoint(pos.x, pos.y - kHalfHeight);
@@ -1414,13 +1655,21 @@ void CObject::AnimateShip()
 // *******************************************************************************
 void CObject::DrawShip(Graphics& g)
 {
-	// draw it
-	Path p;
-	p.addTriangle(mVertices[0].x, mVertices[0].y, mVertices[1].x, mVertices[1].y, mVertices[2].x, mVertices[2].y);
 	g.setColour(Colours::lawngreen);
+	
+	Path path;
+	path.startNewSubPath(Point<float> (mVertices[0].x, mVertices[0].y));
+	path.lineTo (Point<float> (mVertices[1].x, mVertices[1].y));
+	path.lineTo (Point<float> (mVertices[2].x, mVertices[2].y));
+	path.lineTo (Point<float> (mVertices[3].x, mVertices[3].y));
+	path.closeSubPath();
+	g.fillPath (path);
+	// draw it
+	/*Path p;
+	p.addTriangle(mVertices[0].x, mVertices[0].y, mVertices[1].x, mVertices[1].y, mVertices[2].x, mVertices[2].y);
 	//g.SetPenSize(2,2);
 	//g.setColour(this->IsDockedToEarth() ? pong::cShipEdgeBrightColor : pong::cShipEdgeColor);
-	g.fillPath(p);
+	g.fillPath(p);*/
 	
 	// draw thrust
 	if (mThrustVertices.size() > 0)
@@ -1440,14 +1689,11 @@ void CObject::DrawShip(Graphics& g)
 // *******************************************************************************
 void CObject::GetControlData()
 {
-	static const double rotateSpeed = pong::PI/16;
-	static const double thrustSpeed = 20.0;
-	
 	if (KeyPress::isKeyCurrentlyDown(KeyPress::rightKey))
-		mAngle += rotateSpeed;
+		mAngle += pong::kRotateSpeed;
 	
 	if (KeyPress::isKeyCurrentlyDown(KeyPress::leftKey))
-		mAngle -= rotateSpeed;
+		mAngle -= pong::kRotateSpeed;
 	
 	// keep the angle under 2PI
 	mAngle = ::fmodf(mAngle, 2*pong::PI);
@@ -1461,7 +1707,7 @@ void CObject::GetControlData()
 	mAngleCos = ::cos(mAngle);
 	
 	mThrusting = false;
-	if (KeyPress::isKeyCurrentlyDown('z'))
+	if (KeyPress::isKeyCurrentlyDown('z') || KeyPress::isKeyCurrentlyDown(KeyPress::upKey))
 	{
 		// un-lock from earth when thrust happens after the initial wait
 		if (this->IsDockedToEarth() && pong::gNowMS > mDockedToEarthMS)
@@ -1473,11 +1719,15 @@ void CObject::GetControlData()
 		
 		if (!this->IsDockedToEarth())
 		{
-			mState.mVel.mY -= (mAngleCos * thrustSpeed); // vertical thrust
-			mState.mVel.mX += (mAngleSin * thrustSpeed); // horiz thrust
+			mState.mVel.mY -= (mAngleCos * pong::kThrustSpeed); // vertical thrust
+			mState.mVel.mX += (mAngleSin * pong::kThrustSpeed); // horiz thrust
 			mThrusting = true;
 		}
 	}
+	
+	// in case the ship gets too far off the screen
+	if (mPongView->CheckKeyPress('q', 1000))
+		this->ShipDestroyed();
 }
 
 // ******************************************************************************* 
@@ -1486,6 +1736,7 @@ void CObject::GetControlData()
 void CObject::LineBetween(Graphics& g, pong::CVector p1, pong::CVector p2)
 {
 	g.drawLine(p1.mX, p1.mY, p2.mX, p2.mY, 2);
+	//printf("linebtween: (%f,%f) -> (%f,%f) \n", p1.mX, p1.mY, p2.mX, p2.mY);
 }
 
 // ******************************************************************************* 
@@ -1495,15 +1746,13 @@ void CObject::LineBetween(Graphics& g, pong::CVector p1, pong::CVector p2)
 // *******************************************************************************
 void CObject::DrawGroundObject(Graphics& g)
 {
-	g.setColour(pong::cGroundColor);
-	//g.SetPenSize(2,2);
+	g.setColour(Colours::lawngreen);
 	
+	// the position of the line segment is its left endpoint
 	mLeftPoint = mState.mPos;
 	mRightPoint = {mLeftPoint.mX + mWidth, mLeftPoint.mY + mHeight};
 	
-	pong::CVector left = mLeftPoint;
-	pong::CVector right = mRightPoint;
-	LineBetween(g, left, right);
+	this->LineBetween(g, mLeftPoint, mRightPoint);
 	
 	// when this line segment's right side hits the right edge, create the next one
 	if (mRightPoint.mX <= mPongView->GetGridWidth() && !mHasTriggeredNext)
@@ -1515,76 +1764,57 @@ void CObject::DrawGroundObject(Graphics& g)
 	}
 }
 
-// *******************************************************************************
-// 	METHOD:	DrawImage
-// *******************************************************************************
-void CObject::DrawImage(Graphics& g)
-{
-	g.setColour(mColor);
-	
-	if (this->Is(pong::eBullet) || this->Is(pong::eFragment) || this->Is(pong::eShipFragment))
-		g.fillEllipse(mState.mPos.mX, mState.mPos.mY, mImageWidth, mImageHeight);
-	else if (this->Is(pong::eIcon) || this->Is(pong::eVector))
-	{
-		CRect r(mState.mPos.mX, mState.mPos.mY, mImageWidth, mImageHeight); // x,y,w,h
-		g.fillRect(r);
-	}
-}
-
 // ******************************************************************************* 
 // 	METHOD:	Init
 //  tbarram 4/30/17
 // *******************************************************************************
 void CObject::Init()
 {
-	//static DFW_ImageRef sBullet = gViewServer->GetImageRenderer()->RenderWithColor("icn_white_puck-04", cRGBBrightRed);
-	//static DFW_ImageRef sGreenFrag = DFW_ImageLoader::LoadByName("icn_puck-04");
-	//static DFW_ImageRef sWhiteFrag = DFW_ImageLoader::LoadByName("icn_white_puck-04");
+	bool usesImage = false;
 	
 	switch (mType)
 	{
 		case pong::eShip:
+			//mPastPositions.reserve(sPastPositionMax);
 			return;
 			
 		case pong::eFlatEarth:
 		{
-			//mImageName = "meters/vibe/mix/wide/vibe_meter_glow_48";
-			//mImageRef = DFW_ImageLoader::LoadByName(mImageName);
+			mImage = &mPongView->GetFlatEarthImage();
+			usesImage = true;
 			break;
 		}
-			
 		case pong::eGround:
 		{
 			static bool sIncreasingSlope = true;
+			
+			// each ground object is a new line segment
+			// get random values for the width and height of this line segment
 			mWidth = pong::rnd(30, 120);
-			int32_t height = pong::rnd(10, 40);
+			int32_t height = pong::rnd(10, 100);
 			
-			// keep the random heights within a range
-			static const int32_t kMinV = 160;
-			static const int32_t kMaxV = 195;
-			if (sIncreasingSlope)
-			{
-				if (height > mState.mPos.mY - kMinV)
-					height = mState.mPos.mY - kMinV;
-			}
-			else
-			{
-				if (height > kMaxV - mState.mPos.mY)
-					height = kMaxV - mState.mPos.mY;
-			}
+			// make sure the line segments stay within a reasonable range
+			static const int32_t kMinY = (mPongView->GetGridHeight() - 300);
+			static const int32_t kMaxY = (mPongView->GetGridHeight() - 30);
+
+			if (sIncreasingSlope && (height > (mState.mPos.mY - kMinY)))
+				height = mState.mPos.mY - kMinY;
+			else if (!sIncreasingSlope && (height > (kMaxY - mState.mPos.mY)))
+				height = kMaxY - mState.mPos.mY;
 			
+			// switch increasing & decreasing
 			mHeight = height * (sIncreasingSlope ? -1.0 : 1.0);
 			sIncreasingSlope = !sIncreasingSlope;
 			
-			mLeftPoint = mState.mPos;
-			mRightPoint = {mState.mPos.mX + mWidth, mState.mPos.mY + mHeight};
-			
+			// set this non-zero so the object doesn't immediately die in IsAlive()
+			mRightPoint.mX = 1;
 			return;
 		}
-		
 		case pong::eBullet: // bullets are red
 		{
 			mColor = Colours::red;
+			const int32_t size = mPongView->GetShipObject()->IsDockedToEarth() ? 6 :4;
+			mWidth = mHeight = size;
 			break;
 		}
 		case pong::eFragment: // frags are green (native color of the icon)
@@ -1592,6 +1822,7 @@ void CObject::Init()
 			const int32_t kNumColors = 2;
 			Colour c[kNumColors] = {Colours::lawngreen, Colours::ivory};
 			mColor = c[pong::rnd(kNumColors)];
+			mWidth = mHeight = pong::rnd(2, 6);
 			break;
 		}
 		case pong::eShipFragment:
@@ -1599,37 +1830,35 @@ void CObject::Init()
 			const int32_t kNumColors = 5;
 			Colour c[kNumColors] = {Colours::lawngreen, Colours::ivory, Colours::blue, Colours::orange, Colours::yellow};
 			mColor = c[pong::rnd(kNumColors)];
+			mWidth = mHeight = pong::rnd(2, 6);
+			break;
 		}
 		case pong::eIcon:
 		case pong::eVector:
 		{
-			const int32_t kNumColors = 6;
-			Colour c[kNumColors] = {Colours::blue, Colours::red, Colours::yellow, Colours::orange, Colours::pink, Colours::gold};
-			mColor = c[pong::rnd(kNumColors)];
+			// get a random image from the mImages vector
+			auto it = mPongView->GetImages().begin();
+			std::advance(it, pong::rnd((int32_t)mPongView->GetImages().size()));
+			mImage = &(*it);
+			usesImage = true;
+			break;
+		}
+		case pong::eChaser:
+		case pong::eGravity:
+		{
+			mImage = &mPongView->GetChaserImage();
+			usesImage = true;
+			break;
 		}
 		default:
 			break;
 	}
 	
-	// get the image size
-	//mImageWidth = mImageRef->GetBounds().GetWidth();
-	//mImageHeight = mImageRef->GetBounds().GetHeight();
-	
-	// override the size if needed
-	if (mType == pong::eFragment || mType == pong::eShipFragment)
+	if (usesImage)
 	{
-		mImageWidth = mImageHeight = pong::rnd(2, 6);
-	}
-	else if (mType == pong::eBullet)
-	{
-		const int32_t size = mPongView->GetShipObject()->IsDockedToEarth() ? 6 :4;
-		mImageWidth = mImageHeight = size;
-	}
-	
-	if (mType == pong::eIcon || mType == pong::eVector)
-	{
-		mImageWidth = pong::rnd(6, 20);
-		mImageHeight = pong::rnd(6, 20);
+		CMN_ASSERT(mImage->isValid());
+		mWidth = mImage->getWidth();
+		mHeight = mImage->getHeight();
 	}
 }
 
@@ -1639,13 +1868,6 @@ void CObject::Init()
 // *******************************************************************************
 void CObject::Animate(const double diffSec)
 {
-	//static const int64_t kThrottleFactor = 200; // ms
-	//static int64_t sLastTimeHere = 0;
-	//const int64_t timeSinceLastUpdate = sLastTimeHere - pong::gNowMS;
-	//sLastTimeHere = pong::gNowMS;
-	//if (timeSinceLastUpdate < kThrottleFactor)
-	//	return;
-	
 	if (this->Is(pong::eShip))
 		this->GetControlData();
 	
@@ -1653,11 +1875,18 @@ void CObject::Animate(const double diffSec)
 		this->VectorCalc(diffSec);
 	
 	// update position & velocity
+	this->UpdateAcceleration(diffSec);
 	this->CalcPosition(diffSec);
 	
 	// do special ship animation (rotate, etc)
 	if (this->Is(pong::eShip))
+	{
+		mPongView->AddChaserPosition(mState.mPos);
 		this->AnimateShip();
+	}
+	
+	if (this->Is(pong::eChaser))
+		this->AnimateChaser();
 	
 	mNumAnimates++;
 }
@@ -1668,6 +1897,10 @@ void CObject::Animate(const double diffSec)
 // *******************************************************************************
 void CObject::Draw(Graphics& g)
 {
+	// skip the first bullet draw so it doesn't get offset from the front of the ship
+	if (this->Is(pong::eBullet) && mNumAnimates == 0)
+		return;
+	
 	if (this->Is(pong::eShip))
 	{
 		return this->DrawShip(g);
@@ -1677,29 +1910,32 @@ void CObject::Draw(Graphics& g)
 		return this->DrawGroundObject(g);
 	}
 	
-	// skip the first bullet draw so it doesn't get offset from the front of the ship
-	if (this->Is(pong::eBullet) && mNumAnimates == 0)
-		return;
-	
-	return this->DrawImage(g);
+	if (this->Is(pong::eBullet) || this->Is(pong::eFragment) || this->Is(pong::eShipFragment))
+	{
+		g.setColour(mColor);
+		g.fillEllipse(mState.mPos.mX, mState.mPos.mY, mWidth, mHeight);
+	}
+	else
+	{
+		CRectF fr(mState.mPos.mX, mState.mPos.mY, mWidth, mHeight);
+		g.setOpacity(1.0f);
+		g.drawImage(*mImage, fr);
+	}
 
-	const short h = mImageWidth/2;
-	const short v = mImageHeight/2;
-	
-	// rect with position at center for drawing
-	CRect rect(mState.mPos.mX - h, mState.mPos.mY - v, mState.mPos.mX + h, mState.mPos.mY + v);
-		
 	// for collision with ground - just center for now
 	mVertices.push_back({(int32_t)mState.mPos.mX, (int32_t)mState.mPos.mY});
-	
-	//g.DrawImage(mImageRef, RectToCmn_Rect(rect));
+}
+
+// *******************************************************************************
+void CObject::AnimateChaser()
+{
+	mState.mPos = mPongView->GetChaserPosition();
 }
 
 // ******************************************************************************* 
 // 	METHOD:	AddVectorPathElement
 //   1 VectorPathElement maps to 2 VectorPoints - should clean this up and make
 //    the required changes in VectorCalc to handle VPEs instead of VectorPoints
-//  tbarram 5/5/17
 // *******************************************************************************
 void CObject::AddVectorPathElement(pong::VectorPathElement vpe)
 {
@@ -1713,10 +1949,13 @@ void CObject::AddVectorPathElement(pong::VectorPathElement vpe)
 // *******************************************************************************
 void CObject::VectorCalc(const double diffSec)
 {
-	if (!this->GetNumVectorPoints() || mVectorIndex >= this->GetNumVectorPoints())
+	if (!this->GetNumVectorPoints())
 		return;
 	
-	pong::VectorPath& path = this->GetVectorPath();
+	const pong::VectorPath& path = this->GetVectorPath();
+	
+	const int32_t currentIndex = mVectorIndex % this->GetNumVectorPoints();
+	const int32_t nextIndex = (mVectorIndex + 1) % this->GetNumVectorPoints();
 	
 	// see if it's time to switch to the next point
 	if (pong::gNowMS - mLastVectorPointMS > path[mVectorIndex].second)
@@ -1725,8 +1964,8 @@ void CObject::VectorCalc(const double diffSec)
 		
 		// once we've started moving, use the actual current point instead of the expected one -
 		// for some reason the math is missing the target - maybe the amount of time is off by 1?
-		const pong::CVector curPos = mVectorIndex == 0 ? path[mVectorIndex].first : mState.mPos;
-		const pong::CVector nextPos = path[mVectorIndex + 1].first;
+		const pong::CVector curPos = mVectorIndex == 0 ? path[currentIndex].first : mState.mPos;
+		const pong::CVector nextPos = path[nextIndex].first;
 		
 		if (nextPos.mY == curPos.mY && nextPos.mX == curPos.mX)
 		{
@@ -1734,11 +1973,12 @@ void CObject::VectorCalc(const double diffSec)
 		}
 		else
 		{
-			const double distance = TPongView::Distance(nextPos, curPos);
-			double speed = distance * 1000 / (double)path[mVectorIndex + 1].second;
+			const double distance = pong::Distance(nextPos, curPos);
+			double speed = distance * 1000 / (double)path[nextIndex].second;
 			if (speed < 4)
 				speed = 0;
 			
+			// the velocity angle to get to the next point
 			const double angle = ::atan2(nextPos.mY - curPos.mY, nextPos.mX - curPos.mX);
 			
 			mState.mVel.mX = speed * ::cos(angle);

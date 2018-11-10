@@ -20,8 +20,8 @@ class IPongView
 public:
 	static IPongViewPtr Create();
 	virtual void Draw(Graphics& g) {};
+	virtual int32_t GetRefreshrateMS() { return 100; };
+	virtual int32_t GetGridWidth() { return 0; };
+	virtual int32_t GetGridHeight() { return 0; };
 	virtual ~IPongView() {}
-	
-	static const int32_t kGridHeight = 800;
-	static const int32_t kGridWidth = 600;
 };

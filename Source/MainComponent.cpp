@@ -17,21 +17,20 @@ IPongViewPtr pong = nullptr;
 //==============================================================================
 MainComponent::MainComponent()
 {
-	setSize(IPongView::kGridWidth, IPongView::kGridHeight);
+	triggerAsyncUpdate();
 	pong = IPongView::Create();
-	this->startTimer(40);
+	setSize(pong->GetGridWidth(), pong->GetGridHeight());
+	this->startTimer(pong->GetRefreshrateMS());
 }
 
 MainComponent::~MainComponent()
 {
+	pong.reset();
 }
 
 //==============================================================================
 void MainComponent::paint (Graphics& g)
 {
-    // (Our component is opaque, so we must completely fill the background with a solid colour)
-    //g.fillAll (getLookAndFeel().findColour (ResizableWindow::backgroundColourId));
-
     g.setFont (Font (16.0f));
     g.setColour (Colours::lawngreen);
     g.drawText ("Space Force", getLocalBounds(), Justification::centred, true);
@@ -51,5 +50,13 @@ void MainComponent::resized()
 void MainComponent::timerCallback()
 {
 	this->repaint();
+}
+
+//==============================================================================
+void MainComponent::handleAsyncUpdate()
+{
+	// cant do this in ctor since window isnt visible yet
+	setWantsKeyboardFocus(true);
+	grabKeyboardFocus();
 }
 

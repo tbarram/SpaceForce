@@ -23,5 +23,7 @@ public:
 	virtual int32_t GetRefreshrateMS() { return 100; };
 	virtual int32_t GetGridWidth() { return 0; };
 	virtual int32_t GetGridHeight() { return 0; };
+	virtual void SetSongName(std::string name) {};
+	virtual void InstallMusicCallback(std::function<void()> f) {};
 	virtual ~IPongView() {}
 };

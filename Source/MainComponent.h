@@ -37,10 +37,12 @@ public:
 	void releaseResources() override;
 	
 	void MusicCallback();
+	void RotaryCallback(int32_t val);
 
 private:
     //==============================================================================
     // Your private member variables go here...
+	LookAndFeel_V2 l;
 
 
    // JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)

@@ -7,7 +7,7 @@
 */
 
 #include "MainComponent.h"
-#include "UPongView.h"
+#include "SpaceForce.h"
 #include <random>
 #include <algorithm>
 
@@ -76,10 +76,7 @@ namespace
 }
 
 //==============================================================================
-int64_t min64(int64_t a, int64_t b)
-{
-	return a < b ? a : b;
-}
+int64_t min64(int64_t a, int64_t b) { return a < b ? a : b; }
 
 //==============================================================================
 void MainComponent::MusicCallback()
@@ -109,18 +106,17 @@ void MainComponent::MusicCallback()
 	const int64_t fileLengthSeconds = song.mReader->lengthInSamples * song.mReader->sampleRate;
 	const int32_t secondsUntilNext = (const int32_t)min64(fileLengthSeconds, song.mDuration);
 	musicTimer->startTimer(secondsUntilNext * 1000);
-	//musicTimer->startTimer(song.mDuration * 1000);
 }
 
 //==============================================================================
 void MainComponent::RotaryCallback(int32_t val)
 {
 	laf->setColour(Slider::rotarySliderFillColourId, pong->ColorForScore(val));
+	laf->setColour(Slider::thumbColourId, Colours::mediumslateblue);
 	rotarySlider->setValue(val);
 	rotarySlider->setVisible(val > 0);
-	printf("RotaryCallback val: %d\n", val);
+	//printf("RotaryCallback val: %d\n", val);
 }
-
 
 //==============================================================================
 MainComponent::MainComponent()
@@ -132,24 +128,23 @@ MainComponent::MainComponent()
 	srand((int32_t)time(nullptr));
 	
 	rotarySlider = new Slider(Slider::Rotary, Slider::NoTextBox);
-	addAndMakeVisible(rotarySlider);
+	this->addAndMakeVisible(rotarySlider);
 	
 	laf = new LookAndFeel_V2();
 	rotarySlider->setLookAndFeel(laf);
 	rotarySlider->setRange(0, 5000);
 	//rotarySlider->setSkewFactor(0.5);
 	laf->setColour(Slider::rotarySliderOutlineColourId, Colours::black);
-	//laf->setColour(Slider::thumbColourId, Colours::mediumslateblue);
 	
 	this->RotaryCallback(0);
 	
 	const int32_t sliderWidth = 140;
 	const int32_t sliderHeight = 140;
-	const int32_t sliderY = 300;
+	const int32_t sliderY = 240;
 	rotarySlider->setBounds(pong->GetGridWidth()/2 - sliderWidth/2, sliderY, sliderWidth, sliderHeight);
 	
 	pong->InstallRotaryCallback([this](int32_t val) { this->RotaryCallback(val); });
-	pong->InstallMusicCallback([this]() { this->MusicCallback(); });
+	pong->InstallMusicCallback([this]() { this->MusicCallback(); }); //
 
 	// audio
 	setAudioChannels(0, 2);
@@ -197,8 +192,8 @@ MainComponent::MainComponent()
 	std::shuffle(musicVector.begin(), musicVector.end(), randomizer);
 	
 	// start the music
-	musicTimer = new MusicTimer(this);
-	this->MusicCallback();
+	//musicTimer = new MusicTimer(this);
+	//this->MusicCallback();
 }
 
 //==============================================================================
@@ -247,18 +242,6 @@ void MainComponent::prepareToPlay (int samplesPerBlockExpected, double sampleRat
 {
 	transportSource.prepareToPlay (samplesPerBlockExpected, sampleRate);
 }
-
-//==============================================================================
-/*void MainComponent::getNextAudioBlock (const AudioSourceChannelInfo& bufferToFill)
-{
-	if (readerSource.get() == nullptr)
-	{
-		bufferToFill.clearActiveBufferRegion();
-		return;
-	}
-	
-	transportSource.getNextAudioBlock(bufferToFill);
-}*/
 
 //==============================================================================
 void MainComponent::getNextAudioBlock(const AudioSourceChannelInfo& bufferToFill)

@@ -34,6 +34,7 @@ const bool kUseIntroScreens = false;
 const bool kDoDistanceGame = false;
 const bool kDoHostageRescueGame = true;
 
+static_assert(!(kDoDistanceGame && kDoHostageRescueGame));
 
 enum DistanceGameStatus
 {
@@ -43,12 +44,14 @@ enum DistanceGameStatus
 	eActive
 };
 
-int32_t kHostageRescueGameLifeCounter = 0;
+int32_t mHostageRescueGameLifeCounter = 0;
 const int32_t kHostageRescueGameNumLives = 3;
-int32_t kBestHostageGameScore = 0;
+int32_t mBestHostageGameScore = 0;
 int32_t	mNumHostagesSaved = 0;
 int32_t mScore = 0;
+int32_t mLastScore = 0;
 int64_t	mHostageGameStartTimeMS = 0;
+bool mFreezeShip = false;
 
 // make a one-finger game where only thrust works
 const int32_t kDistanceGameScoreCutoff = 44; // 38 seems best
@@ -114,6 +117,7 @@ const int32_t kGridHeight = 800;
 const int32_t kGridWidth = 1200;
 	
 bool mWasRotating = false;
+bool mRescueWhileRotating = false;
 double mAngleStart = 0;
 bool mHitHalfwayMark = false;
 int64_t mShipBlinkEndMS = 0;
@@ -125,16 +129,22 @@ int64_t mShipSafeEndMS = 0;
 	
 enum ScoringEvent
 {
-	eRescuedHostage 		= 1 << 0,
-	eRescuedHostage2 		= 1 << 1,
-	eRescuedHostage3 		= 1 << 2,
-	eSingleRotate 			= 1 << 3,
-	eDoubleRotate 			= 1 << 4,
-	eTripleRotate 			= 1 << 5,
-	eGroundCollision		= 1 << 6
+	eNullEvent					= 0,
+	eRescuedHostage 			= 1 << 0,
+	eRescuedHostage2 			= 1 << 1,
+	eRescuedHostage3 			= 1 << 2,
+	eSingleRotate 				= 1 << 3,
+	eDoubleRotate 				= 1 << 4,
+	eTripleRotate 				= 1 << 5,
+	eGroundCollision			= 1 << 6,
+	eSingleRotateWithRescue 	= 1 << 7,
+	eDoubleRotateWithRescue		= 1 << 8,
+	eTripleRotateWithRescue		= 1 << 9,
 };
 	
-std::map<ScoringEvent, bool> sScoreEventHaveShownText;
+std::map<ScoringEvent, bool> sScoreEventHaveShownText; // could use counter only
+std::map<ScoringEvent, int32_t> sScoreEventCounter;
+ScoringEvent mLastScoringEvent = eNullEvent;
 	
 const int32_t kNumSamples = 20; // ~1 sec
 class SlidingAverage
@@ -975,6 +985,7 @@ public:
 	void CheckDockedToEarth();
 	void DoDistanceGame(Graphics& g);
 	void DoHostageRescueGame(Graphics& g);
+	void DrawHostageGameLegend(Graphics& g);
 	void DoExplosions();
 	bool CheckKeyPress(char key, int32_t throttleMS);
 	void VectorObjectDied();
@@ -1017,6 +1028,7 @@ private:
 	void			DrawIntroScreens(Graphics& g);
 	void 			DrawIntroText(std::string text, Graphics& g, bool start = false);
 	void 			DrawTextAtY(std::string text, int32_t y, Graphics& g);
+	void 			DrawTextAtXY(std::string text, int32_t x, int32_t y, Graphics& g);
 	void			DrawDistanceMeter(Graphics& g);
 	void			NewFallingIconObject();
 	void			NewCrawlingIconObject();
@@ -1028,6 +1040,9 @@ private:
 	void			SmartBomb();
 	int32_t			ScoreForEvent(ScoringEvent ev) const;
 	std::string 	TextForScoreEvent(ScoringEvent ev) const;
+	std::string 	LabelForScoreEvent(ScoringEvent ev) const;
+	Colour 			TextColorForScoreEvent(ScoringEvent ev) const;
+	void			ShowScoreStats(Graphics& g);
 	
 private:
 	
@@ -1116,6 +1131,7 @@ private:
 };
 
 int32_t mHostageGameStatus = (kDoHostageRescueGame ? eWaitingForStart : eInactive);
+bool HostageRescueGameActive() { return kDoHostageRescueGame != eInactive; }
 
 /*---------------------------------------------------------------------------*/
 // 	METHOD:	Create - factory
@@ -1182,13 +1198,19 @@ void TPongView::Init()
 		const CVector dummy(0, 0);
 		mShipObject = this->NewObject(eShip, {dummy, dummy, dummy, 0, eIcon|eVector|eGround}, true);
 		CMN_ASSERT(mShipObject);
+		
+		if (HostageRescueGameActive())
+			mShipObject->SetFixed(true);
+		
 		mShipObject->ShipReset();
 		
 		mShipObject->GetChild()->SetColor(Colours::red);
 	}
 	
 	this->NewGroundObject({(double)this->GetGridWidth(), (double)this->GetGridHeight() - 50}, true);
-	this->NewGroundObject({(double)this->GetGridWidth(), (double)this->GetGridHeight() - 500}, false);
+	
+	if (HostageRescueGameActive())
+		this->NewGroundObject({(double)this->GetGridWidth(), (double)this->GetGridHeight() - 500}, false);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1579,11 +1601,11 @@ bool TPongView::CheckKeyPress(char key, int32_t throttleMS)
 void TPongView::Animate()
 {
 	// get the time diff since last wakeup
-	const double diffMS = gNowMS - mLastDrawMS;
+	const double diffMS = (gNowMS - mLastDrawMS);
 	if (diffMS < kAnimateThrottleMS)
 		return;
 	
-	const double diffSec = diffMS / 1000.0;
+	const double diffSec = (diffMS / 1000.0);
 	mLastDrawMS = gNowMS;
 	
 	if (mIsPaused)
@@ -1618,7 +1640,7 @@ void TPongView::Animate()
 		//mAutoSmartBombMode = !mAutoSmartBombMode;
 	
 	if (this->CheckKeyPress('d', 700))
-		mDistanceGameStatus = mDistanceGameStatus == eInactive ? eWaitingForStart : eInactive;
+		mDistanceGameStatus = (mDistanceGameStatus == eInactive ? eWaitingForStart : eInactive);
 	
 	if (this->CheckKeyPress(KeyPress::spaceKey, 200))
 		this->SetShipSafe(2000);
@@ -1637,6 +1659,13 @@ void TPongView::DrawTextAtY(std::string text, int32_t y, Graphics& g)
 {
 	CRect rect(0, y, this->GetGridWidth(), 20); // x,y,w,h
 	g.drawText(text, rect, Justification::centred, true);
+}
+
+/*---------------------------------------------------------------------------*/
+void TPongView::DrawTextAtXY(std::string text, int32_t x, int32_t y, Graphics& g)
+{
+	CRect rect(x, y, 360, 20); // x,y,w,h
+	g.drawText(text, rect, Justification::right, true);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1660,19 +1689,80 @@ void TPongView::SetDistanceGameScore(int32_t score)
 /*---------------------------------------------------------------------------*/
 void TPongView::Rotation(int32_t numRotations)
 {
-	const ScoringEvent ev = 	numRotations == 1 ? eSingleRotate :
-								numRotations == 2 ? eDoubleRotate :
-													eTripleRotate;
+	ScoringEvent ev;
+	if (mRescueWhileRotating)
+	{
+		ev = 	numRotations == 1 ? eSingleRotateWithRescue :
+				numRotations == 2 ? eDoubleRotateWithRescue :
+									eTripleRotateWithRescue;
+	}
+	else
+	{
+		ev = 	numRotations == 1 ? eSingleRotate :
+				numRotations == 2 ? eDoubleRotate :
+									eTripleRotate;
+		
+	}
 	
 	this->ScoreEvent(ev);
 	
-	if (mDistanceGameStatus != eStarted)
-		return;
-	
-	if (numRotations >= 2)
-		this->SetDistanceGameScore(kDistanceGameScoreStartingPoints);
-	else
-		this->SetDistanceGameScore(mDistanceGameScore + kDistanceGameRotationBonus);
+	if (mDistanceGameStatus == eStarted)
+	{
+		if (numRotations >= 2)
+			this->SetDistanceGameScore(kDistanceGameScoreStartingPoints);
+		else
+			this->SetDistanceGameScore(mDistanceGameScore + kDistanceGameRotationBonus);
+	}
+}
+
+/*---------------------------------------------------------------------------*/
+Colour TPongView::TextColorForScoreEvent(ScoringEvent ev) const
+{
+	switch (ev)
+	{
+		case eRescuedHostage:
+		case eRescuedHostage2:
+		case eRescuedHostage3:
+			return Colours::ivory;
+		case eSingleRotate:
+		case eDoubleRotate:
+		case eTripleRotate:
+			return Colours::orange;
+		case eSingleRotateWithRescue:
+		case eDoubleRotateWithRescue:
+		case eTripleRotateWithRescue:
+			return Colours::yellow;
+		case eGroundCollision:
+			return Colours::palevioletred;
+	}
+}
+
+/*---------------------------------------------------------------------------*/
+std::string TPongView::LabelForScoreEvent(ScoringEvent ev) const
+{
+	switch (ev)
+	{
+		case eRescuedHostage:
+			return "Rescued soldiers";
+		case eRescuedHostage2:
+			return "Rescued spies";
+		case eRescuedHostage3:
+			return "Rescued captains";
+		case eSingleRotate:
+			return "Single rotations";
+		case eDoubleRotate:
+			return "Double rotations";
+		case eTripleRotate:
+			return "Triple rotations";
+		case eSingleRotateWithRescue:
+			return "Single rotations with hostage";
+		case eDoubleRotateWithRescue:
+			return "Double rotations with hostage";
+		case eTripleRotateWithRescue:
+			return "Triple rotations with hostage";
+		case eGroundCollision:
+			return "Collided with ground!";
+	}
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1692,6 +1782,12 @@ std::string TPongView::TextForScoreEvent(ScoringEvent ev) const
 			return "Nice DOUBLE rotate!!";
 		case eTripleRotate:
 			return "Nice TRIPLE rotate!!!";
+		case eSingleRotateWithRescue:
+			return "Nice rotate WITH RESCUE!!";
+		case eDoubleRotateWithRescue:
+			return "Nice DOUBLE rotate WITH RESCUE!!!";
+		case eTripleRotateWithRescue:
+			return "Nice TRIPLE rotate WITH RESCUE!!!!";
 		case eGroundCollision:
 			return "Collided with ground!";
 	}
@@ -1709,11 +1805,17 @@ int32_t TPongView::ScoreForEvent(ScoringEvent ev) const
 		case eRescuedHostage3:
 			return 3;
 		case eSingleRotate:
-			return 1;
-		case eDoubleRotate:
 			return 2;
+		case eDoubleRotate:
+			return 8;
 		case eTripleRotate:
-			return 3;
+			return 20;
+		case eSingleRotateWithRescue:
+			return 10;
+		case eDoubleRotateWithRescue:
+			return 30;
+		case eTripleRotateWithRescue:
+			return 50;
 		case eGroundCollision:
 			return -3;
 	}
@@ -1722,7 +1824,14 @@ int32_t TPongView::ScoreForEvent(ScoringEvent ev) const
 /*---------------------------------------------------------------------------*/
 void TPongView::ScoreEvent(ScoringEvent ev)
 {
+	if (mHostageGameStatus != eStarted)
+		return;
+	
+	sScoreEventCounter[ev]++;
+	mLastScoringEvent = ev;
+	
 	const int32_t score = this->ScoreForEvent(ev);
+	
 	mScore += score;
 	
 	std::string scoreText = ((score > 0 ? "+" : "") + std::to_string(score));
@@ -1733,7 +1842,7 @@ void TPongView::ScoreEvent(ScoringEvent ev)
 		scoreText = (this->TextForScoreEvent(ev) + " (" + scoreText + ")");
 	}
 	
-	const Colour c = (score < 0 ? Colours::red : Colours::ivory);
+	const Colour c = this->TextColorForScoreEvent(ev);
 	this->NewTextBubble(scoreText, (mShipObject->Pos() + CVector(-40,-40)), c);
 }
 
@@ -1742,12 +1851,12 @@ void TPongView::RescuedHostage(EHostageType type)
 {
 	mNumHostagesSaved++;
 	mShipBlinkColor = Colours::black;
-	mShipBlinkEndMS = gNowMS + 1000;
+	mShipBlinkEndMS = (gNowMS + 1000);
+	mRescueWhileRotating = true;
 	
 	const ScoringEvent ev = type == eSoldier ? 	eRescuedHostage :
 							type == eBoss ? 	eRescuedHostage2 :
 												eRescuedHostage3;
-	
 	this->ScoreEvent(ev);
 	
 	if (mDistanceGameStatus != eStarted)
@@ -1757,10 +1866,52 @@ void TPongView::RescuedHostage(EHostageType type)
 }
 
 /*---------------------------------------------------------------------------*/
-void TPongView::DoHostageRescueGame(Graphics& g)
+void TPongView::DrawHostageGameLegend(Graphics& g)
 {
 	StFontRestorer f(22, g);
-	g.setColour(Colours::honeydew);
+	g.setColour(Colours::orange);
+	
+	static const CVector pos(this->GetGridWidth() - 400, 100);
+	
+	DrawTextAtXY("Single rotation:  + 2", pos.mX, pos.mY, g);
+	DrawTextAtXY("Double rotation:  + 8", pos.mX, pos.mY + 30, g);
+	DrawTextAtXY("Triple rotation:  + 20", pos.mX, pos.mY + 60, g);
+}
+
+/*---------------------------------------------------------------------------*/
+void TPongView::ShowScoreStats(Graphics& g)
+{
+	StFontRestorer f(16, g);
+	g.setColour(Colours::orange);
+	CVector pos(this->GetGridWidth() - 400, 70);
+	
+	DrawTextAtXY("Scores:", pos.mX, pos.mY, g);
+	pos.mY += 20;
+	
+	for (auto& i : sScoreEventCounter)
+	{
+		if (i.second > 0)
+		{
+			const int32_t score = this->ScoreForEvent(i.first);
+			const std::string scoreText = ((score > 0 ? "+" : "") + std::to_string(score));
+			
+			const std::string text = this->LabelForScoreEvent(i.first) +
+			"(" + scoreText + ") : " + std::to_string(i.second);
+			
+			DrawTextAtXY(text, pos.mX, pos.mY, g);
+			pos.mY += 20;
+		}
+	}
+}
+
+/*---------------------------------------------------------------------------*/
+void TPongView::DoHostageRescueGame(Graphics& g)
+{
+	//if (mHostageGameStatus != eInactive)
+		//this->DrawHostageGameLegend(g);
+	
+	StFontRestorer f(22, g);
+	g.setColour(Colours::floralwhite);
 	
 	switch (mHostageGameStatus)
 	{
@@ -1769,16 +1920,26 @@ void TPongView::DoHostageRescueGame(Graphics& g)
 			
 		case eWaitingForStart:
 		{
-			DrawTextAtY("Waiting For Start", 160, g);
-			DrawTextAtY("Last Score:  " + std::to_string(mScore), 220, g);
-			DrawTextAtY("Best Score:  " + std::to_string(kBestHostageGameScore), 280, g);
+			DrawTextAtY("Waiting For Start", 100, g);
+			DrawTextAtY("Best Score:  " + std::to_string(mBestHostageGameScore), 140, g);
+			DrawTextAtY("Last Score:  " + std::to_string(mLastScore), 180, g);
 			
-			// the game starts when the ship is close enough to start scoring
-			if (mScore > 0)
+			this->ShowScoreStats(g);
+			
+			// the game starts when the first points are scored
+			if (mShipObject->IsFixed() == false)
 			{
 				// start
 				mHostageGameStatus = eStarted;
 				mHostageGameStartTimeMS = gNowMS;
+				mHostageRescueGameLifeCounter = 0;
+				sScoreEventHaveShownText.clear();
+				
+				for (auto& i : sScoreEventCounter)
+					i.second = 0;
+				
+				//if (mLastScoringEvent != eNullEvent)
+				//	sScoreEventCounter[mLastScoringEvent]++;
 			}
 			
 			break;
@@ -1786,23 +1947,29 @@ void TPongView::DoHostageRescueGame(Graphics& g)
 			
 		case eStarted:
 		{
-			DrawTextAtY("Score " + std::to_string(mScore), 120, g);
-			DrawTextAtY("Hostages Saved: " + std::to_string(mNumHostagesSaved), 160, g);
-			DrawTextAtY("Best score: " + std::to_string(kBestHostageGameScore), 200, g);
+			DrawTextAtY("Score: " + std::to_string(mScore), 120, g);
 			
-			// need to end the game
-			if (/* DISABLES CODE */ (true))
-			{
-			}
-			else
+			const int32_t livesRemaining = (kHostageRescueGameNumLives - mHostageRescueGameLifeCounter);
+			DrawTextAtY("Lives remaining: " + std::to_string(livesRemaining), 160, g);
+			DrawTextAtY("Best score: " + std::to_string(mBestHostageGameScore), 200, g);
+			
+			this->ShowScoreStats(g);
+			
+			if (livesRemaining == 0)
 			{
 				// game over - get stats and jump to eWaitingForStart
 				mHostageGameStatus = eWaitingForStart;
-				/*mDistanceGameDurationMS = gNowMS - mDistanceGameStartTimeMS;
-				mNextDistanceGameStartTimeMS = gNowMS + kIntervalBetweenGames;*/
-			}
+				
+				// save high score
+				if (mBestHostageGameScore < mScore)
+					mBestHostageGameScore = mScore;
 			
-			break;
+				mHostageRescueGameLifeCounter = 0;
+				mHostageGameStartTimeMS = 0;
+				mLastScore = mScore;
+				mScore = 0;
+				mShipObject->SetFixed(true);
+			}
 		}
 	}
 }
@@ -2074,7 +2241,7 @@ CObject* TPongView::NewObject(const EObjectType type, const CState state, bool m
 void TPongView::NewTextBubble(std::string text, CVector pos, Colour color)
 {
 	const CVector v(-20, -50);
-	const CVector a(-20, -20);
+	const CVector a(20, -20);
 	const int64_t lifetime = 3000;
 	CObject* obj = this->NewObject(eTextBubble, {pos, v, a, lifetime, 0});
 	obj->SetTextBubbleTest(text);
@@ -2103,7 +2270,8 @@ void TPongView::NewGroundObject(CVector pos, bool isBottom)
 	this->GetObjectPool().AddGroundObject(groundObject);
 	groundObject->InitGround(isBottom);
 	
-	if (isBottom && CheckDeadline(mNextHostageObjectMS))
+	// add a hostage
+	if (HostageRescueGameActive() && isBottom && CheckDeadline(mNextHostageObjectMS))
 	{
 		mNextHostageObjectMS = 0;
 		// create hostage object attached to this ground object
@@ -2286,13 +2454,18 @@ void CObjectPool::ApplyGravity(CObject& obj1, CObject& obj2)
 	obj2.IncrementAcc(a);
 }
 
+// if you protect all of one type of hostage for 5 occurences -
+//  i.e. you let none escape for 5 of that type,
+// - like all soldiers - you get points
+
+
 /*---------------------------------------------------------------------------*/
 // 	METHOD:	ShipReset
 //  tbarram 5/8/17
 /*---------------------------------------------------------------------------*/
 void CObject::ShipReset()
 {
-	//printf("ShipReset kHostageRescueGameLifeCounter = %d \n", kHostageRescueGameLifeCounter);
+	//printf("ShipReset mHostageRescueGameLifeCounter = %d \n", mHostageRescueGameLifeCounter);
 	
 	mState.mPos = {float(mPongView->GetGridWidth()/2), float(mPongView->GetGridHeight() - kGroundMidpoint)};
 	
@@ -2306,13 +2479,10 @@ void CObject::ShipReset()
 	mDockedToEarthMS = 0;
 	gSlidingAverage.Reset();
 	mPongView->SetDistanceGameScore(INT_MIN);
-	mPongView->SetShipSafe(3000);
+	mPongView->SetShipSafe(1000);
 	
 	mWasRotating = false;
-	
-	// need to change this so it only happens once the game has started
-	if (mHostageGameStatus == eStarted)
-		mPongView->ScoreEvent(eGroundCollision);
+	mRescueWhileRotating = false;
 	
 	// see if we should reset the hostage resuce counter
 	bool resetHostageCount = false;
@@ -2323,15 +2493,7 @@ void CObject::ShipReset()
 	}
 	else if (kDoHostageRescueGame)
 	{
-		// reset every time you run out of lives
-		if (++kHostageRescueGameLifeCounter == kHostageRescueGameNumLives)
-		{
-			kHostageRescueGameLifeCounter = 0;
-			resetHostageCount = true;
-			
-			if (kBestHostageGameScore < mScore)
-				kBestHostageGameScore = mScore;
-		}
+		mHostageRescueGameLifeCounter++;
 	}
 	
 	if (resetHostageCount)
@@ -2512,7 +2674,7 @@ void CObject::CalcPosition(const double diffSec)
 				mState.mAcc.mY = 0;
 		}
 		
-		if (mPongView->DistanceGameActive())
+		if (mPongView->DistanceGameActive() || HostageRescueGameActive())
 		{
 			if (mState.mPos.mX < 0 || mState.mPos.mX > kGridWidth)
 			{
@@ -2864,7 +3026,11 @@ void CObject::CheckRotation(bool isRotating)
 	}
 	else
 	{
+		//if (mNumRotations > 0)
+			//mPongView->Rotation(mNumRotations);
+		
 		mNumRotations = 0;
+		mRescueWhileRotating = false;
 	}
 	
 	// what was is what is
@@ -2931,6 +3097,9 @@ void CObject::GetControlData()
 			mState.mVel.mY -= (cos * kThrustSpeed); // vertical thrust
 			mState.mVel.mX += (sin * kThrustSpeed); // horiz thrust
 			mThrusting = true;
+			
+			if (HostageRescueGameActive())
+				this->SetFixed(false);
 		}
 	}
 }
@@ -3022,16 +3191,23 @@ void CObject::InitGround(bool isBottom)
 	mIsBottom = isBottom;
 	
 	// how close are the tight corridors
-	const int32_t kMinCloseness = 32;
-	const int32_t kMaxDiff = 320;
+	const int32_t kMinClosenessMax = 32;
+	const int32_t kMinClosenessMin = 16;
 	
-	// as this increase, the ground gets narrower
-	int32_t dec = mHostageGameStartTimeMS ? ((int32_t)(gNowMS - mHostageGameStartTimeMS) / 10000) : 0;
-	if (dec > 20)
-		dec = 20;
+	// how far are the widest parts
+	const int32_t kMaxDiffMax = 400;
+	const int32_t kMaxDiffMin = 240;
 	
-	const int32_t minCloseness = (kMinCloseness - dec);
-	const int32_t maxDiff = (kMaxDiff - (dec * 8));
+	// as time increases, the corridor gets narrower
+	const int32_t dec = mHostageGameStartTimeMS ? ((int32_t)(gNowMS - mHostageGameStartTimeMS) / 20000) : 0;
+	
+	int32_t minCloseness = (kMinClosenessMax - dec);
+	if (minCloseness < kMinClosenessMin)
+		minCloseness = kMinClosenessMin;
+	
+	int32_t maxDiff = (kMaxDiffMax - (dec * 8));
+	if (maxDiff < kMaxDiffMin)
+		maxDiff = kMaxDiffMin;
 	
 	const int32_t kUpperLineMin = kGroundMidpoint + (maxDiff/2);
 	const int32_t kUpperLineMax = kGroundMidpoint + (minCloseness/2);

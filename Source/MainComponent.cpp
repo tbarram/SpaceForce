@@ -93,7 +93,12 @@ void MainComponent::MusicCallback()
 	if (song.mReader)
 	{
 		transportSource.setSource(song.mSource, 0, nullptr, song.mReader->sampleRate);
-		this->prepareToPlay(512, song.mReader->sampleRate);
+		
+		// used to pass in the song's sr, that worked fine for a while, then one day
+		// it stopped working and everything played too fast - so we now pass in
+		// 48000 - not sure what's going on here
+		const double sr = 48000; // song.mReader->sampleRate
+		this->prepareToPlay(512, sr);
 		transportSource.setPosition(song.mPosition);
 		kGainFactor = song.mGain;
 		transportSource.start();
@@ -104,7 +109,7 @@ void MainComponent::MusicCallback()
 	// schedule the next one based on the duration specified
 	// this will cancel the current scheduled event and re-start it
 	const int64_t fileLengthSeconds = song.mReader->lengthInSamples * song.mReader->sampleRate;
-	const int32_t secondsUntilNext = (const int32_t)min64(fileLengthSeconds, song.mDuration);
+	const int32_t secondsUntilNext = (int32_t)fileLengthSeconds; //(const int32_t)min64(fileLengthSeconds, song.mDuration);
 	musicTimer->startTimer(secondsUntilNext * 1000);
 }
 
@@ -192,8 +197,48 @@ MainComponent::MainComponent()
 	std::shuffle(musicVector.begin(), musicVector.end(), randomizer);
 	
 	// start the music
-	//musicTimer = new MusicTimer(this);
-	//this->MusicCallback();
+	musicTimer = new MusicTimer(this);
+	this->MusicCallback();
+	
+#if 0
+	StreamingSocket* socket = new StreamingSocket();
+	StreamingSocket* conection;
+	
+	#define MAX_URL_SIZE 2000
+	
+	bool listening = socket->createListener(8080,"127.0.0.1");
+	
+	char buffer[MAX_URL_SIZE];
+	
+	char response[] ="HTTP/1.1 200 OK\r\n"
+	"Content-Type: text/html; charset=UTF-8\r\n\r\n"
+	"<p>This is a paragraph.</p>"
+	"<p>This is another paragraph.</p>";
+	
+	
+	if (listening)
+	{
+		printf("Listening to ip: 127.0.0.1 ip\n");
+		while(1){
+			
+			printf("waiting ...\n");
+			conection = socket->waitForNextConnection();
+			
+			printf("got connection ...\n");
+			if (conection)
+			{
+				printf("Request: ");
+				conection->read(buffer, MAX_URL_SIZE-1, false);
+				
+				printf("%s \n", buffer);
+				conection->write(response, strlen(response));
+				conection->close();
+			}
+		}
+	}
+	else
+		printf("Conection Error \n");
+#endif
 }
 
 //==============================================================================
@@ -265,4 +310,49 @@ void MainComponent::releaseResources()
 	transportSource.releaseResources();
 }
 
+/** A list of the command IDs that this demo can perform. */
 
+/*
+enum KeyPressCommandIDs
+{
+	buttonMoveUp = 1,
+	buttonMoveRight,
+	buttonMoveDown,
+	buttonMoveLeft,
+	nextButtonColour,
+	previousButtonColour,
+	nextBackgroundColour,
+	previousBackgroundColour
+};
+
+//==============================================================================
+void MainComponent::getAllCommands (Array<CommandID>& commands)
+{
+	Array<CommandID> ids { KeyPressCommandIDs::buttonMoveUp, KeyPressCommandIDs::buttonMoveRight,
+		KeyPressCommandIDs::buttonMoveDown, KeyPressCommandIDs::buttonMoveLeft,
+		KeyPressCommandIDs::nextButtonColour, KeyPressCommandIDs::previousButtonColour,
+		KeyPressCommandIDs::nextBackgroundColour, KeyPressCommandIDs::previousBackgroundColour };
+
+	commands.addArray (ids);
+}
+
+
+//==============================================================================
+void MainComponent::getCommandInfo (CommandID commandID, ApplicationCommandInfo& result)
+{
+	switch (commandID)
+	{
+		case KeyPressCommandIDs::buttonMoveUp:
+			result.setInfo ("Move up", "Move the button up", "Button", 0);
+			result.addDefaultKeypress (KeyPress::upKey, 0);
+			break;
+	}
+}
+
+//==============================================================================
+bool MainComponent::perform (const InvocationInfo& info)
+{
+	int bp = 0;
+	bp++;
+}
+*/

@@ -17,6 +17,7 @@
 class MainComponent   : public AudioAppComponent,
 						public AsyncUpdater,
 						public Timer
+						//public ApplicationCommandTarget
 {
 public:
     //==============================================================================
@@ -38,6 +39,12 @@ public:
 	
 	void MusicCallback();
 	void RotaryCallback(int32_t val);
+	
+	/*
+	ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
+	void getAllCommands (Array<CommandID>& commands) override;
+	void getCommandInfo (CommandID commandID, ApplicationCommandInfo& result) override;
+	bool perform (const InvocationInfo& info) override;*/
 
 private:
     //==============================================================================

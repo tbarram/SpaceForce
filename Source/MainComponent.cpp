@@ -73,6 +73,8 @@ namespace
 			musicVector.push_back({name, pos, dur, file, reader, source, gain});
 		}
 	}
+	
+	ApplicationProperties appProperties;
 }
 
 //==============================================================================
@@ -145,7 +147,7 @@ MainComponent::MainComponent()
 	
 	const int32_t sliderWidth = 140;
 	const int32_t sliderHeight = 140;
-	const int32_t sliderY = 240;
+	const int32_t sliderY = 80;
 	rotarySlider->setBounds(pong->GetGridWidth()/2 - sliderWidth/2, sliderY, sliderWidth, sliderHeight);
 	
 	pong->InstallRotaryCallback([this](int32_t val) { this->RotaryCallback(val); });
@@ -199,6 +201,17 @@ MainComponent::MainComponent()
 	// start the music
 	musicTimer = new MusicTimer(this);
 	this->MusicCallback();
+	
+	/*
+	PropertiesFile::Options options;
+	options.applicationName = "SpaceForce";
+	options.filenameSuffix = "settings";
+	options.folderName = "Application Support";
+	appProperties.setStorageParameters(options);
+	
+	PropertiesFile* prefs = appProperties.getCommonSettings(true);
+	
+	int bp = 0;*/
 	
 #if 0
 	StreamingSocket* socket = new StreamingSocket();

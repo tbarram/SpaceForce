@@ -16,6 +16,7 @@
 #include <list>
 #include <map>
 #include <math.h>
+#include <sstream>
 
 /*---------------------------------------------------------------------------*/
 
@@ -44,7 +45,7 @@ enum GameMode
 	eGravityShepherd,
 };
 
-GameMode sGameMode = eStartScreen;
+GameMode sGameMode = eDistanceGame;
 
 enum DistanceGameStatus
 {
@@ -65,11 +66,11 @@ bool mFreezeShip = false;
 
 // make a one-finger game where only thrust works
 const int32_t kDistanceGameScoreCutoff = 48; //44; // 41 //38; //44; // 38 seems best
-const int32_t kDistanceGameUpperBoundary = 80;
+//const int32_t kDistanceGameUpperBoundary = 80;
 
 // this caps the negative points as you get higher
 // this makes thigns subtly worse let's disable it
-const int32_t kDistanceGameScoreMaxPenalty = 20; //100;
+//const int32_t kDistanceGameScoreMaxPenalty = 20; //100;
 
 const int32_t kDistanceGameScoreStartingPoints = 5000;
 const int32_t kDistanceGameRotationBonus = 2000;
@@ -123,6 +124,7 @@ const String cHostageImagePath_Soldier = kSpecialImagesFolder + "icons8-standing
 const String cHostageImagePath_Boss = kSpecialImagesFolder + "icons8-cylon-head-new-24.png";
 const String cHostageImagePath_Friend = kSpecialImagesFolder + "icons8-spy-32.png";
 const String cBulletImagePath = kSpecialImagesFolder + "icons8-bang-12.png";
+const String cGlidePathLogoImagePath = kSpecialImagesFolder + "GP.png";
 	
 const int32_t kGridHeight = 800;
 const int32_t kGridWidth = 1200;
@@ -140,7 +142,8 @@ int64_t mRotationFlipStartMS = 0;
 int64_t mLastHostageRescuedMS = 0;
 bool mRescueWhileRotating = false;
 double mAngleStart = 0;
-int64_t mShipBlinkEndMS = 0;
+int64_t mShipBlinkEndMS_StayLow = 0;
+int64_t mShipBlinkEndMS_Rotate = 0;
 int32_t mNumRotations = 0;
 Colour mShipBlinkColor;
 bool sIncreasingSlopeBottom = true;
@@ -164,8 +167,51 @@ enum ScoringEvent
 	eTripleRotateWithRescue
 };
 	
-std::map<ScoringEvent, int32_t> sScoreEventCounter;
-std::map<ScoringEvent, int32_t> sBestScoreEventCounter;
+using ScoreEventMap = std::map<ScoringEvent, int32_t>;
+ScoreEventMap sScoreEventCounter;
+ScoreEventMap sBestScoreEventCounter;
+ScoreEventMap sBestAllTimeScoreEventCounter;
+	
+std::string StringFromMap(const ScoreEventMap& map)
+{
+	std::stringstream os;
+	for (auto& ev : map)
+	{
+		os << ev.first << "," << ev.second << "\n";
+	}
+	return os.str();
+}
+	
+void MapFromString(const std::string& str, ScoreEventMap& map)
+{
+	std::istringstream input(str);
+	for (std::string line; std::getline(input, line); )
+	{
+		std::stringstream ss(line);
+		std::vector<std::string> result;
+		
+		while( ss.good() )
+		{
+			std::string substr;
+			std::getline(ss, substr, ',');
+			result.push_back( substr );
+		}
+		
+		if (result.size() == 2)
+		{
+			const ScoringEvent scoreEvent = (ScoringEvent)std::stoi(result[0]);
+			const int numEvents = std::stoi(result[1]);
+			map[scoreEvent] = numEvents;
+		}
+	}
+}
+
+/*---------------------------------------------------------------------------*/
+void DrawImageAt(Image& img, float x, float y, Graphics& g)
+{
+	const Rectangle<float> r(x, y, img.getWidth(), img.getHeight());
+	g.drawImage(img, r, RectanglePlacement::centred);
+}
 	
 const int32_t kNumSamples = 20; // ~1 sec
 class SlidingAverage
@@ -581,7 +627,7 @@ public:
 	static bool		IsUnderLine(CVector right, CVector left, CVector pt);
 	static bool		IsAboveLine(CVector right, CVector left, CVector pt);
 	static int32_t	CalcDistanceToGround(CObject& ground, CObject& obj);
-	static int32_t	DistanceToLine(CVector right, CVector left, CVector pt);
+	static int32_t	VerticalDistanceToLine(CVector right, CVector left, CVector pt);
 	static void		LineBetween(Graphics& g, CVector p1, CVector p2, int32_t size = 2);
 	void			SetNumHitPoints(int32_t hits) { mHitPoints = hits; }
 	int32_t			GetNumHitPoints() const { return mHitPoints; }
@@ -1014,7 +1060,9 @@ public:
 	virtual void SetSongName(std::string name) override { mSongName = name; }
 	virtual void InstallMusicCallback(std::function<void()> f) override { mMusicCallback = f; }
 	virtual void InstallRotaryCallback(std::function<void(int32_t)> f) override { mRotaryCallback = f; }
+	virtual void InstallHighScoreCallback(std::function<void(std::string)> f) override { mHighScoreCallback = f; }
 	virtual Colour ColorForScore(int32_t score) override;
+	void SetHighScore(std::string score) override;
 	void Animate();
 	void CheckKeyPresses();
 	void CreateNewObjects();
@@ -1085,6 +1133,7 @@ private:
 	std::string 	LabelForScoreEvent(ScoringEvent ev) const;
 	Colour 			TextColorForScoreEvent(ScoringEvent ev) const;
 	void			ShowScoreStats(Graphics& g);
+	void 			ScoreStatsUI(std::map<ScoringEvent, int32_t>& list, int32_t x, int32_t& y, Graphics& g);
 	
 private:
 	
@@ -1120,6 +1169,7 @@ public:
 	int32_t			mPointsByKeepingLow;
 	int32_t			mPointsByKeepingLowIndex;
 	int32_t			mNewDistanceGameScoreBest;
+	int32_t			mNewDistanceGameScoreBestAllTime = 0;
 	int32_t			mIntroTextCurrentY;
 	
 	bool			mShipHasGravity;
@@ -1155,6 +1205,7 @@ public:
 	std::function<void()> 	mMusicCallback;
 	
 	std::function<void(int32_t)> mRotaryCallback;
+	std::function<void(std::string)> mHighScoreCallback;
 	
 	static const int32_t sChaserPositionMax = 512;
 	int32_t	mChaserPositionWriteIndex;
@@ -1170,8 +1221,10 @@ public:
 	Image				mChaserImage;
 	std::map<EHostageType, Image> mHostageImage;
 	Image				mBulletImage;
+	Image				mGlidePathLogoImage;
 	int32_t				mGravityIndex;
 	std::map<char, int64_t> mLastKeyPressTimeMS;
+	bool				mMinimapActive = false;
 	
 	CObjectPool		mObjectPool;
 	
@@ -1222,12 +1275,16 @@ void TPongView::Init()
 	mShowGuideEndMS = (gNowMS + 4000); // show the guide for 4 seconds
 	mIntroScreenChangedTimeMS = (kUseIntroScreens ? gNowMS + 8000 : 0);
 	mNextDistanceGameStartTimeMS = (gNowMS + kIntervalBetweenGames);
-	mNextHostageObjectMS = (gNowMS + 4000);
+	mNextHostageObjectMS = (gNowMS + 10000);
 	
 	mHostageImage[eSoldier] = ImageFileFormat::loadFrom(File(cHostageImagePath_Soldier));
 	mHostageImage[eBoss] = ImageFileFormat::loadFrom(File(cHostageImagePath_Boss));
 	mHostageImage[eFriend] = ImageFileFormat::loadFrom(File(cHostageImagePath_Friend));
 	mBulletImage = ImageFileFormat::loadFrom(File(cBulletImagePath));
+	mGlidePathLogoImage = ImageFileFormat::loadFrom(File(cGlidePathLogoImagePath));
+	
+	// start distance game on launch
+	mDistanceGameStatus = eWaitingForStart;
 	
 	ObjectHistory::gShipHistory.reserve(kHistorySize);
 	
@@ -1242,7 +1299,6 @@ void TPongView::Init()
 		mNextNewChaserObjectMS = gNowMS + 5000;
 	}
 	
-	
 	// create ship object
 	{
 		const CVector dummy(0, 0);
@@ -1252,7 +1308,8 @@ void TPongView::Init()
 		mShipObject->SetFixed(true);
 		mShipObject->ShipReset();
 		
-		mShipObject->GetChild()->SetColor(Colours::red);
+		if (mShipObject->GetChild())
+			mShipObject->GetChild()->SetColor(Colours::red);
 	}
 	
 	this->NewGroundObject({(double)this->GetGridWidth(), (double)this->GetGridHeight() - 50}, true);
@@ -1366,10 +1423,15 @@ void TPongView::Draw(Graphics& g)
 	gNowMS = Time::getCurrentTime().toMilliseconds();
 	
 	this->CheckKeyPresses();
+	
+	pong::DrawImageAt(mGlidePathLogoImage, 86, 16, g);
 
 	// draw minimap outline
-	g.drawRect(kMiniMapTopLeftCornerV.mX, kMiniMapTopLeftCornerV.mY, kMinimapWidth, kMinimapHeight, 1);
-	g.drawRect(kMiniMapOuterTopLeftCorner.mX, kMiniMapOuterTopLeftCorner.mY, kMinimapOuterWidth, kMinimapOuterHeight, 1);
+	if (mMinimapActive)
+	{
+		g.drawRect(kMiniMapTopLeftCornerV.mX, kMiniMapTopLeftCornerV.mY, kMinimapWidth, kMinimapHeight, 1);
+		g.drawRect(kMiniMapOuterTopLeftCorner.mX, kMiniMapOuterTopLeftCorner.mY, kMinimapOuterWidth, kMinimapOuterHeight, 1);
+	}
 	
 	this->HandleIntroWindow(g);
 	
@@ -1606,8 +1668,8 @@ void TPongView::DrawText(Graphics& g)
 	{
 		//const int32_t elapsedSec = (int32_t)(gNowMS - gStartTimeMS) / 1000;
 		// draw text box in bottom right corner  GetNumActiveObjects
-		const int32_t margin = 20;
-		const CRect rect(margin, this->GetGridHeight() - margin, this->GetGridWidth() - (2 * margin), 200); // x,y,w,h
+		const int32_t margin = 50;
+		const CRect rect(margin, this->GetGridHeight() - 80, this->GetGridWidth() - (2 * margin), 30); // x,y,w,h
 		const std::string textL =
 				"\nlevel: " + std::to_string(mLevel) +
 				//"\t\tkills: " + std::to_string(mKills) +
@@ -1694,6 +1756,14 @@ void TPongView::Animate()
 	const double diffSec = (diffMS / 1000.0);
 	mLastDrawMS = gNowMS;
 	
+	// tried adding periodic explosions but it got too cluttered
+	static int64_t sLastExplosions = gNowMS;
+	if (gNowMS - sLastExplosions > 5000)
+	{
+		sLastExplosions = gNowMS;
+		//this->DoExplosions();
+	}
+	
 	if (mIsPaused)
 		return;
 	
@@ -1751,7 +1821,7 @@ void TPongView::Animate()
 void TPongView::SetShipSafe(int64_t lengthMS)
 {
 	mShipSafeEndMS = (gNowMS + lengthMS);
-	mShipBlinkEndMS = mShipSafeEndMS;
+	mShipBlinkEndMS_Rotate = mShipSafeEndMS;
 	mShipBlinkColor = Colours::blue;
 }
 
@@ -1775,6 +1845,19 @@ Colour TPongView::ColorForScore(int32_t score)
 	return 	score > 3000 ? 	Colours::mediumslateblue :
 			score > 1000 ? 	Colour(0xFFE1EA3C) :
 							Colours::red;
+}
+
+/*---------------------------------------------------------------------------*/
+void TPongView::SetHighScore(std::string score)
+{
+	MapFromString(score, sBestAllTimeScoreEventCounter);
+	
+	mNewDistanceGameScoreBestAllTime = 0;
+	for (auto& i : sBestAllTimeScoreEventCounter)
+	{
+		const int score = ScoreForEvent(i.first) * i.second;
+		mNewDistanceGameScoreBestAllTime += score;
+	}
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1840,8 +1923,8 @@ Colour TPongView::TextColorForScoreEvent(ScoringEvent ev) const
 		case eRescuedHostage:
 		case eRescuedHostage2:
 		case eRescuedHostage3:
-		case eSingleRotate:
 			return Colours::ivory;
+		case eSingleRotate:
 		case eDoubleRotate:
 			return Colours::orange;
 		case eTripleRotate:
@@ -1903,7 +1986,10 @@ int32_t TPongView::ScoreForEvent(ScoringEvent ev) const
 {
 	switch (ev)
 	{
-		case eRescuedHostage: 			return 1;
+		case eRescuedHostage:
+		{
+			return sGameMode == eDistanceGame ? 2000 : 1;
+		}
 		case eRescuedHostage2: 			return 2;
 		case eRescuedHostage3: 			return 3;
 		case eSingleRotate:
@@ -1922,7 +2008,10 @@ int32_t TPongView::ScoreForEvent(ScoringEvent ev) const
 		{
 			return sGameMode == eDistanceGame ? 5000 : 50;
 		}
-		case eSingleRotateWithRescue: 	return 10;
+		case eSingleRotateWithRescue:
+		{
+			return sGameMode == eDistanceGame ? 4000 : 10;
+		}
 		case eDoubleRotateWithRescue: 	return 30;
 		case eTripleRotateWithRescue: 	return 50;
 		case eStayedLow:				return 1000;
@@ -1933,7 +2022,8 @@ int32_t TPongView::ScoreForEvent(ScoringEvent ev) const
 /*---------------------------------------------------------------------------*/
 void TPongView::ScoreEvent(ScoringEvent ev)
 {
-	if (sGameMode != eHostageRescue && sGameMode != eDistanceGame)
+	if (sGameMode != eHostageRescue &&
+		sGameMode != eDistanceGame)
 		return;
 	
 	// we use IsFixed() as an "is game active" check
@@ -1944,18 +2034,18 @@ void TPongView::ScoreEvent(ScoringEvent ev)
 	const int32_t score = this->ScoreForEvent(ev);
 	mScore += score;
 	
-	std::string scoreText = ((score > 0 ? "+" : "") + std::to_string(score));
-	
 	// update the score event counter
 	sScoreEventCounter[ev]++;
 	
-	// show the text bubble once for each event (resets for each game)
-	//if (sScoreEventCounter[ev] == 1)
+	std::string scoreText = ((score > 0 ? "+" : "") + std::to_string(score));
+	
+	// if it's the first time then add the text for the score event
+	if (true /*sScoreEventCounter[ev] == 1*/)
 		scoreText = (this->TextForScoreEvent(ev) + " (" + scoreText + ")");
 	
 	const Colour c = this->TextColorForScoreEvent(ev);
-	const int32_t x = rnd(-50, -100);
-	const int32_t y = rnd(-50, -100);
+	const int32_t x = rnd(-100, -50);
+	const int32_t y = rnd(-100, -50);
 	this->NewTextBubble(scoreText, (mShipObject->Pos() + CVector(x,y)), c);
 }
 
@@ -1964,14 +2054,21 @@ void TPongView::RescuedHostage(EHostageType type)
 {
 	mNumHostagesSaved++;
 	mShipBlinkColor = Colours::black;
-	mShipBlinkEndMS = (gNowMS + 1000);
+	mShipBlinkEndMS_Rotate = (gNowMS + 1000);
 	mLastHostageRescuedMS = gNowMS;
 	mRescueWhileRotating = true;
 	
-	const ScoringEvent ev = type == eSoldier ? 	eRescuedHostage :
-							type == eBoss ? 	eRescuedHostage2 :
-												eRescuedHostage3;
-	this->ScoreEvent(ev);
+	if (mPongView->DistanceGameActive())
+	{
+		this->ScoreEvent(eRescuedHostage);
+	}
+	else
+	{
+		const ScoringEvent ev = type == eSoldier ? 	eRescuedHostage :
+								type == eBoss ? 	eRescuedHostage2 :
+													eRescuedHostage3;
+		this->ScoreEvent(ev);
+	}
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1988,21 +2085,9 @@ void TPongView::DrawHostageGameLegend(Graphics& g)
 }
 
 /*---------------------------------------------------------------------------*/
-void TPongView::ShowScoreStats(Graphics& g)
+void TPongView::ScoreStatsUI(std::map<ScoringEvent, int32_t>& list, int32_t x, int32_t& y, Graphics& g)
 {
-	if (sGameMode != eHostageRescue && sGameMode != eDistanceGame)
-		return;
-	
-	StFontRestorer f(16, g);
-	g.setColour(Colours::lawngreen);
-	const int32_t x = this->GetGridWidth() - 400;
-	int32_t y = 30;
-	
-	const std::string stage = (mDistanceGameStatus == eWaitingForStart ? "Last" : "Current");
-	DrawTextAtXY(stage + " score: " + std::to_string(mNewDistanceGameScore), x, y, g);
-	y += 20;
-	
-	for (auto& i : sScoreEventCounter)
+	for (auto& i : list)
 	{
 		if (i.second > 0)
 		{
@@ -2011,33 +2096,51 @@ void TPongView::ShowScoreStats(Graphics& g)
 			const std::string scoreText = ((score > 0 ? "+" : "") + std::to_string(score));
 			
 			const std::string text = this->LabelForScoreEvent(i.first) +
-								"(" + scoreText + ") : " + std::to_string(i.second);
+			"(" + scoreText + ") : " + std::to_string(i.second);
 			
 			DrawTextAtXY(text, x, y, g);
-			y += 20;
+			y += 16;
 		}
 	}
+}
+
+/*---------------------------------------------------------------------------*/
+void TPongView::ShowScoreStats(Graphics& g)
+{
+	if (sGameMode != eHostageRescue && sGameMode != eDistanceGame)
+		return;
+	
+	StFontRestorer f(14, g);
+	g.setColour(Colours::lawngreen);
+	const int32_t x = this->GetGridWidth() - 400;
+	int32_t y = 10;
+	
+	const std::string stage = (mDistanceGameStatus == eWaitingForStart ? "Last" : "Current");
+	DrawTextAtXY(stage + " score: " + std::to_string(mNewDistanceGameScore), x, y, g);
+	y += 16;
+	
+	ScoreStatsUI(sScoreEventCounter, x, y, g);
 	
 	if (!sBestScoreEventCounter.empty())
 	{
-		y = 180;
+		y += 10;
 		g.setColour(Colours::lawngreen);
-		DrawTextAtXY("Best Score: " + std::to_string(mNewDistanceGameScoreBest), x, y, g);
-		y += 20;
-		for (auto& i : sBestScoreEventCounter)
+		DrawTextAtXY("Best score: " + std::to_string(mNewDistanceGameScoreBest), x, y, g);
+		
+		y += 16;
+		ScoreStatsUI(sBestScoreEventCounter, x, y, g);
+	}
+	
+	if (!sBestAllTimeScoreEventCounter.empty())
+	{
+		y += 10;
+		g.setColour(Colours::lawngreen);
+		DrawTextAtXY("Best all-time score: " + std::to_string(mNewDistanceGameScoreBestAllTime), x, y, g);
+		
+		if (mNewDistanceGameScoreBest < mNewDistanceGameScoreBestAllTime)
 		{
-			if (i.second > 0)
-			{
-				g.setColour(TextColorForScoreEvent(i.first));
-				const int32_t score = this->ScoreForEvent(i.first);
-				const std::string scoreText = ((score > 0 ? "+" : "") + std::to_string(score));
-				
-				const std::string text = this->LabelForScoreEvent(i.first) +
-				"(" + scoreText + ") : " + std::to_string(i.second);
-				
-				DrawTextAtXY(text, x, y, g);
-				y += 20;
-			}
+			y += 16;
+			ScoreStatsUI(sBestAllTimeScoreEventCounter, x, y, g);
 		}
 	}
 }
@@ -2122,7 +2225,8 @@ void TPongView::DoDistanceGame(Graphics& g)
 	gSlidingAverage.AddSample(mShipDistanceToGround);
 	g.setColour(Colours::honeydew);
 	
-	StFontRestorer f(22, g);
+	StFontRestorer f(26, g);
+	g.setFont(Font("Chalkboard", 28, 0));
 	
 	switch (mDistanceGameStatus)
 	{
@@ -2134,11 +2238,13 @@ void TPongView::DoDistanceGame(Graphics& g)
 		{
 			mDistanceGameString = "Waiting For Start";
 			
-			DrawTextAtY("Waiting For Start", 160, g);
-			//DrawTextAtY("Last Time:  " + std::to_string((mDistanceGameDurationMS)/1000), 220, g);
-			//DrawTextAtY("Best Time:  " + std::to_string((mDistanceGameDurationBestMS)/1000), 280, g);
-			DrawTextAtY("Last Score:  " + std::to_string(mNewDistanceGameScore), 220, g);
-			DrawTextAtY("Best Score:  " + std::to_string(mNewDistanceGameScoreBest), 280, g);
+			//g.setColour(Colours::mediumslateblue);
+			DrawTextAtY("Waiting For Start", 70, g);
+			DrawTextAtY("Last Score:  " + std::to_string(mNewDistanceGameScore), 110, g);
+			DrawTextAtY("Best Score:  " + std::to_string(mNewDistanceGameScoreBest), 150, g);
+			
+			if (mNewDistanceGameScoreBestAllTime)
+				DrawTextAtY("All-time Best Score:  " + std::to_string(mNewDistanceGameScoreBestAllTime), 190, g);
 			
 			this->ShowScoreStats(g);
 			
@@ -2190,8 +2296,6 @@ void TPongView::DoDistanceGame(Graphics& g)
 			
 			if (d > 0)
 			{
-				//mNewDistanceGameScore += d;
-				
 				const int nextTextBubblePoints = (mPointsByKeepingLowIndex * 1000);
 				
 				mPointsByKeepingLow += d;
@@ -2206,7 +2310,7 @@ void TPongView::DoDistanceGame(Graphics& g)
 			//else if (tooHigh > 0)
 			//	mNewDistanceGameScore -= tooHigh;
 			
-			StFontRestorer f(Font(/*"Times",*/ 32, 0), g);
+			//StFontRestorer f(Font(/*"Times",*/ 32, 0), g);
 			DrawTextAtY("Score:  " + std::to_string(mNewDistanceGameScore), 260, g);
 			
 			static int gameDuration = 30000; // 30sec
@@ -2232,13 +2336,20 @@ void TPongView::DoDistanceGame(Graphics& g)
 				this->SetDistanceGameScore(0);
 				mShipObject->ShipReset();
 				
-				::BoundLo(mDistanceGameDurationBestMS, mDistanceGameDurationMS);
-				
+				//::BoundLo(mDistanceGameDurationBestMS, mDistanceGameDurationMS);
 				
 				if (mNewDistanceGameScoreBest < mNewDistanceGameScore)
 				{
 					mNewDistanceGameScoreBest = mNewDistanceGameScore;
 					sBestScoreEventCounter = sScoreEventCounter; // copy the list
+				}
+				
+				if (mNewDistanceGameScoreBestAllTime < mNewDistanceGameScore)
+				{
+					mNewDistanceGameScoreBestAllTime = mNewDistanceGameScore;
+					sBestAllTimeScoreEventCounter = sBestScoreEventCounter;
+					if (mHighScoreCallback)
+						mHighScoreCallback(StringFromMap(sBestScoreEventCounter));
 				}
 			}
 
@@ -2408,7 +2519,7 @@ CObject* TPongView::NewObject(const EObjectType type, const CState state, bool m
 {
 	CObject* obj = mObjectPool.NewObject(this, type, state);
 	
-	if (minimap)
+	if (mMinimapActive && minimap)
 	{
 		CObject* miniMapObj = this->NewObject(eMiniMap, {{0,0}, {0,0}, {0,0}, 0, 0});
 		miniMapObj->SetParent(obj);
@@ -2448,10 +2559,14 @@ void TPongView::NewGroundObject(CVector pos, bool isBottom)
 	const CVector v(isBottom ? -kGroundSpeedBottom : -kGroundSpeedTop, 0);
 	CObject* groundObject = this->NewObject(eGround, {pos, v, zero, 0, 0});
 	this->GetObjectPool().AddGroundObject(groundObject);
+	
+	const bool hostagesInDistanceGame = false; //(mPongView->DistanceGameActive() && !isBottom);
+	
 	groundObject->InitGround(isBottom);
 	
 	// add a hostage
-	if (HostageRescueGameActive() && CheckDeadline(mNextHostageObjectMS))
+	if ((HostageRescueGameActive() || hostagesInDistanceGame)
+		&& CheckDeadline(mNextHostageObjectMS))
 	{
 		mNextHostageObjectMS = 0;
 		// create hostage object attached to this ground object
@@ -2467,7 +2582,8 @@ void TPongView::NewGroundObject(CVector pos, bool isBottom)
 		static const CVector bottomOffset(8, 16 + rnd(12));
 		const CVector& offset = isBottom ? topOffset : bottomOffset;
 		hostage->SetHostageOffset(offset);
-		mNextHostageObjectMS = (gNowMS + rnd(2000, 6000));
+		const int nextHostage = mPongView->DistanceGameActive() ? rnd(10000, 12000) : rnd(2000, 6000);
+		mNextHostageObjectMS = (gNowMS + nextHostage);
 	}
 }
 
@@ -2954,11 +3070,12 @@ bool CObject::CollidedWith(CRect& a, CRect& b)
 }
 
 /*---------------------------------------------------------------------------*/
-// 	METHOD:	DistanceToLine
+// 	METHOD:	VerticalDistanceToLine
 /*---------------------------------------------------------------------------*/
-int32_t CObject::DistanceToLine(CVector right, CVector left, CVector pt)
+int32_t CObject::VerticalDistanceToLine(CVector right, CVector left, CVector pt)
 {
-	// only check the segment we're in
+	// only check the segment we're in since we're
+	// checking vertical distance
 	if (pt.mX < left.mX || pt.mX > right.mX)
 		return INT_MAX;
 	
@@ -2991,7 +3108,7 @@ int32_t CObject::CalcDistanceToGround(CObject& ground, CObject& obj)
 	int32_t distance = INT_MAX;
 	for (const auto& v : vertices)
 	{
-		const int32_t d = DistanceToLine(ground.mRightEndpoint, ground.mLeftEndpoint, CVector(v.x, v.y));
+		const int32_t d = VerticalDistanceToLine(ground.mRightEndpoint, ground.mLeftEndpoint, CVector(v.x, v.y));
 		if (d < distance)
 			distance = d;
 	}
@@ -3004,7 +3121,7 @@ int32_t CObject::CalcDistanceToGround(CObject& ground, CObject& obj)
 /*---------------------------------------------------------------------------*/
 bool CObject::IsUnderLine(CVector right, CVector left, CVector pt)
 {
-	return (DistanceToLine(right, left, pt) < 0);
+	return (VerticalDistanceToLine(right, left, pt) < 0);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -3012,7 +3129,7 @@ bool CObject::IsUnderLine(CVector right, CVector left, CVector pt)
 /*---------------------------------------------------------------------------*/
 bool CObject::IsAboveLine(CVector right, CVector left, CVector pt)
 {
-	const int32_t d = DistanceToLine(right, left, pt);
+	const int32_t d = VerticalDistanceToLine(right, left, pt);
 	return (d > 0 && d < 1000);
 }
 
@@ -3119,7 +3236,7 @@ void CObject::AnimateShip()
 		mState.mPos = {600, 400};
 	
 	// position refers to the center of the triangle
-	CPointF pos(mState.mPos.mX, mState.mPos.mY);
+	const CPointF pos(mState.mPos.mX, mState.mPos.mY);
 	
 	static const int32_t kBaseWidth = 16;
 	static const int32_t kHeight = 8;
@@ -3188,7 +3305,7 @@ void CObject::DrawShip(Graphics& g)
 		{
 			//g.setColour(Colours::mediumslateblue);
 			mShipBlinkColor = Colours::red;
-			mShipBlinkEndMS = gNowMS + 100000;
+			mShipBlinkEndMS_StayLow = gNowMS + 100000;
 		}
 		mWasCloseToGround = true;
 	}
@@ -3196,29 +3313,29 @@ void CObject::DrawShip(Graphics& g)
 		//g.setColour(Colours::mediumvioletred);
 	else
 	{
-		mShipBlinkEndMS = 0;
+		mShipBlinkEndMS_StayLow = 0;
 		mWasCloseToGround = false;
-		g.setColour(Colours::lawngreen);
+		g.setColour(Colours::mediumslateblue);
 	}
 	
 	if (CheckDeadline(mShipSafeEndMS))
 		mShipSafeEndMS = 0;
 	
-	if (mShipBlinkEndMS)
+	if (mShipBlinkEndMS_StayLow || mShipBlinkEndMS_Rotate)
 	{
-		const int64_t timeLeft = (mShipBlinkEndMS - gNowMS);
-		const bool useColor = (timeLeft / 100) % 2;
+		// the blinking due to close-to-ground has priority
+		int64_t& blinkEndMS = mShipBlinkEndMS_StayLow ? mShipBlinkEndMS_StayLow : mShipBlinkEndMS_Rotate;
+		const int64_t timeLeft = (blinkEndMS - gNowMS);
+		const bool useColor = ((timeLeft / 100) % 2);
 		if (timeLeft > 0)
 			g.setColour(useColor ? mShipBlinkColor : Colours::white);
 		else
-			mShipBlinkEndMS = 0;
+			blinkEndMS = 0;
 	}
-	
-	auto& v = mVertices;
-	auto& tv = mThrustVertices;
 	
 	// draw ship
 	{
+		auto& v = mVertices;
 		Path p;
 		p.startNewSubPath(CPointF(v[0].x, v[0].y));
 		for (int k = 1; k <= 3; k++)
@@ -3228,10 +3345,11 @@ void CObject::DrawShip(Graphics& g)
 	}
 	
 	// draw thrust
+	auto& tv = mThrustVertices;
 	if (tv.size() > 0 && tv[0].x != 0 && tv[0].x != -1)
 	{
-		g.setColour(Colours::red);
 		Path p;
+		g.setColour(Colours::red);
 		p.addTriangle(tv[0].x, tv[0].y, tv[1].x, tv[1].y, tv[2].x, tv[2].y);
 		g.fillPath(p);
 	}
@@ -3267,21 +3385,14 @@ void CObject::CheckRotation(bool isRotating)
 			if (angularChange > nextRotationThreshold)
 			{
 				mNumRotations++;
-				
-				// blinking on rotation stomps on the blinking on height
-				// so remove for now
-				//mShipBlinkColor = (mNumRotations > 1 ? Colours::blue : Colours::red);
-				//mShipBlinkEndMS = (gNowMS + (mNumRotations > 1 ? 1600 : 800));
-				
 				mPongView->Rotation(mNumRotations);
+				mShipBlinkColor = (mNumRotations > 1 ? Colours::red : Colours::blue);
+				mShipBlinkEndMS_Rotate = (gNowMS + 800);
 			}
 		}
 	}
 	else
 	{
-		//if (mNumRotations > 0)
-			//mPongView->Rotation(mNumRotations);
-		
 		mNumRotations = 0;
 		mRescueWhileRotating = false;
 	}
@@ -3328,6 +3439,8 @@ void CObject::GetControlData()
 	mAngleCos = ::cos(mAngle);
 	
 	const bool onlyVerticalThrust = false;
+	
+	// handle thrust
 	
 	mThrusting = false;
 	if (mThrustEnabled && !hasBeenRotatingABit &&

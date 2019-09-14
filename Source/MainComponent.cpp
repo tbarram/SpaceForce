@@ -32,6 +32,8 @@ namespace
 	
 	Slider* rotarySlider = nullptr;
 	LookAndFeel* laf = nullptr;
+	
+	File highScoreFile("/Users/tbarram/Desktop/highScore.txt");
 
 	AudioFormatManager formatManager;
 	std::unique_ptr<AudioFormatReaderSource> readerSource;
@@ -111,7 +113,9 @@ void MainComponent::MusicCallback()
 	// schedule the next one based on the duration specified
 	// this will cancel the current scheduled event and re-start it
 	const int64_t fileLengthSeconds = song.mReader->lengthInSamples * song.mReader->sampleRate;
-	const int32_t secondsUntilNext = (int32_t)fileLengthSeconds; //(const int32_t)min64(fileLengthSeconds, song.mDuration);
+	int32_t secondsUntilNext = (int32_t)fileLengthSeconds; //(const int32_t)min64(fileLengthSeconds, song.mDuration);
+	if (secondsUntilNext > 30)
+		secondsUntilNext = 30;
 	musicTimer->startTimer(secondsUntilNext * 1000);
 }
 
@@ -123,6 +127,12 @@ void MainComponent::RotaryCallback(int32_t val)
 	rotarySlider->setValue(val);
 	rotarySlider->setVisible(val > 0);
 	//printf("RotaryCallback val: %d\n", val);
+}
+
+//==============================================================================
+void MainComponent::HighScoreCallback(std::string val)
+{
+	highScoreFile.replaceWithText(val);
 }
 
 //==============================================================================
@@ -150,8 +160,10 @@ MainComponent::MainComponent()
 	const int32_t sliderY = 80;
 	rotarySlider->setBounds(pong->GetGridWidth()/2 - sliderWidth/2, sliderY, sliderWidth, sliderHeight);
 	
+	// install callbacks
 	pong->InstallRotaryCallback([this](int32_t val) { this->RotaryCallback(val); });
-	pong->InstallMusicCallback([this]() { this->MusicCallback(); }); //
+	pong->InstallMusicCallback([this]() { this->MusicCallback(); });
+	pong->InstallHighScoreCallback([this](std::string val) { this->HighScoreCallback(val); });
 
 	// audio
 	setAudioChannels(0, 2);
@@ -202,17 +214,18 @@ MainComponent::MainComponent()
 	musicTimer = new MusicTimer(this);
 	this->MusicCallback();
 	
-	/*
-	PropertiesFile::Options options;
-	options.applicationName = "SpaceForce";
-	options.filenameSuffix = "settings";
-	options.folderName = "Application Support";
-	appProperties.setStorageParameters(options);
+	// read in the highScore file
+	String s = highScoreFile.loadFileAsString();
+	pong->SetHighScore(s.toStdString());
 	
-	PropertiesFile* prefs = appProperties.getCommonSettings(true);
-	
-	int bp = 0;*/
-	
+	/*StringArray sa;
+	highScoreFile.readLines(sa);
+	for (String s : sa)
+	{
+		String tmp = s;
+		int bp = 0;
+	}*/
+
 #if 0
 	StreamingSocket* socket = new StreamingSocket();
 	StreamingSocket* conection;

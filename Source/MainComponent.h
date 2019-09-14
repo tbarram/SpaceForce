@@ -39,6 +39,7 @@ public:
 	
 	void MusicCallback();
 	void RotaryCallback(int32_t val);
+	void HighScoreCallback(std::string val);
 	
 	/*
 	ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }

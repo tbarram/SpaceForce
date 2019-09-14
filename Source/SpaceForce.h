@@ -26,6 +26,8 @@ public:
 	virtual void SetSongName(std::string name) {};
 	virtual void InstallMusicCallback(std::function<void()> f) {};
 	virtual void InstallRotaryCallback(std::function<void(int32_t)> f) {};
+	virtual void InstallHighScoreCallback(std::function<void(std::string)> f) {};
 	virtual Colour ColorForScore(int32_t score) { return Colours::red; }
+	virtual void SetHighScore(std::string score) {};
 	virtual ~IPongView() {}
 };

@@ -13,6 +13,7 @@
 
 
 typedef std::shared_ptr<class IPongView> IPongViewPtr;
+#define ROTARY_RANGE 5000
 
 // IPongView
 class IPongView

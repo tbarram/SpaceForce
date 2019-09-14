@@ -2248,13 +2248,8 @@ void TPongView::DoDistanceGame(Graphics& g)
 			
 			this->ShowScoreStats(g);
 			
-			// Glide Path - that's the new name of the app
-			
-			// the game starts when the ship is close enough to start scoring
-			//if (mShipDistanceToGround > 0 &&
-			//	mShipDistanceToGround < kDistanceGameScoreCutoff)
-			if (mShipObject->IsThrusting() &&
-				gNowMS > mNextDistanceGameStartTimeMS)
+			// game starts with first thrust (after brief pause)
+			if (mShipObject->IsThrusting() && gNowMS > mNextDistanceGameStartTimeMS)
 			{
 				// start
 				mDistanceGameStatus = eStarted;
@@ -2289,11 +2284,6 @@ void TPongView::DoDistanceGame(Graphics& g)
 			// score goes up when you're below the cutoff, and down when above
 			// might need to tune this a bit (quadratic?)
 			const int32_t d = (kDistanceGameScoreCutoff - mShipDistanceToGround);
-			//const int32_t scoreImpact = std::max(d, -kDistanceGameScoreMaxPenalty);
-			//this->SetDistanceGameScore(mDistanceGameScore + scoreImpact);
-			
-			//const int tooHigh = (mShipDistanceToGround - kDistanceGameUpperBoundary);
-			
 			if (d > 0)
 			{
 				const int nextTextBubblePoints = (mPointsByKeepingLowIndex * 1000);
@@ -2307,21 +2297,18 @@ void TPongView::DoDistanceGame(Graphics& g)
 				}
 				
 			}
-			//else if (tooHigh > 0)
-			//	mNewDistanceGameScore -= tooHigh;
 			
-			//StFontRestorer f(Font(/*"Times",*/ 32, 0), g);
 			DrawTextAtY("Score:  " + std::to_string(mNewDistanceGameScore), 260, g);
 			
-			static int gameDuration = 30000; // 30sec
-			auto elapsedTime = gNowMS - mDistanceGameStartTimeMS;
+			static const int kGameDuration = 30000; // 30sec
+			const auto elapsedTime = (gNowMS - mDistanceGameStartTimeMS);
 				
-			float percentage = 1.0 - ((float)elapsedTime / (float)gameDuration);
+			const float percentage = (1.0 - ((float)elapsedTime / (float)kGameDuration));
 			
 			if (mRotaryCallback)
-				mRotaryCallback(percentage * 5000);
+				mRotaryCallback(percentage * ROTARY_RANGE);
 			
-			if (elapsedTime > gameDuration)
+			if (elapsedTime > kGameDuration)
 			{
 				// game over - get stats and jump to eWaitingForStart
 				mDistanceGameStatus = eWaitingForStart;

@@ -149,7 +149,7 @@ MainComponent::MainComponent()
 	
 	laf = new LookAndFeel_V2();
 	rotarySlider->setLookAndFeel(laf);
-	rotarySlider->setRange(0, 5000);
+	rotarySlider->setRange(0, ROTARY_RANGE);
 	//rotarySlider->setSkewFactor(0.5);
 	laf->setColour(Slider::rotarySliderOutlineColourId, Colours::black);
 	

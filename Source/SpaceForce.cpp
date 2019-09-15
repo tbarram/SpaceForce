@@ -1106,6 +1106,7 @@ public:
 	void ClearHostages() { mTotalNumHostages = mNumHostagesSaved = mScore = 0; }
 	void SetShipSafe(int64_t lengthMS);
 	void ScoreEvent(ScoringEvent ev);
+	int32_t TotalScoreFromMap(const ScoreEventMap& map) const;
 		
 private:
 	
@@ -1848,16 +1849,22 @@ Colour TPongView::ColorForScore(int32_t score)
 }
 
 /*---------------------------------------------------------------------------*/
+int32_t TPongView::TotalScoreFromMap(const ScoreEventMap& map) const
+{
+	int32_t total = 0;
+	for (auto& i : map)
+	{
+		const int score = ScoreForEvent(i.first) * i.second;
+		total += score;
+	}
+	return total;
+}
+
+/*---------------------------------------------------------------------------*/
 void TPongView::SetHighScore(std::string score)
 {
 	MapFromString(score, sBestAllTimeScoreEventCounter);
-	
-	mNewDistanceGameScoreBestAllTime = 0;
-	for (auto& i : sBestAllTimeScoreEventCounter)
-	{
-		const int score = ScoreForEvent(i.first) * i.second;
-		mNewDistanceGameScoreBestAllTime += score;
-	}
+	mNewDistanceGameScoreBestAllTime = TotalScoreFromMap(sBestAllTimeScoreEventCounter);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1925,11 +1932,13 @@ Colour TPongView::TextColorForScoreEvent(ScoringEvent ev) const
 		case eRescuedHostage3:
 			return Colours::ivory;
 		case eSingleRotate:
+			return Colours::sienna;
 		case eDoubleRotate:
 			return Colours::orange;
 		case eTripleRotate:
-		case eQuadrupleRotate:
 			return Colours::red;
+		case eQuadrupleRotate:
+			return Colours::mediumvioletred;
 		case eSingleRotateWithRescue:
 		case eDoubleRotateWithRescue:
 		case eTripleRotateWithRescue:
@@ -2093,10 +2102,8 @@ void TPongView::ScoreStatsUI(std::map<ScoringEvent, int32_t>& list, int32_t x, i
 		{
 			g.setColour(TextColorForScoreEvent(i.first));
 			const int32_t score = this->ScoreForEvent(i.first);
-			const std::string scoreText = ((score > 0 ? "+" : "") + std::to_string(score));
-			
 			const std::string text = this->LabelForScoreEvent(i.first) +
-			"(" + scoreText + ") : " + std::to_string(i.second);
+				" (+" + std::to_string(score) + ") : " + std::to_string(i.second);
 			
 			DrawTextAtXY(text, x, y, g);
 			y += 16;
@@ -2116,32 +2123,32 @@ void TPongView::ShowScoreStats(Graphics& g)
 	int32_t y = 10;
 	
 	const std::string stage = (mDistanceGameStatus == eWaitingForStart ? "Last" : "Current");
-	DrawTextAtXY(stage + " score: " + std::to_string(mNewDistanceGameScore), x, y, g);
+	DrawTextAtXY("--- " + stage + " score: " + std::to_string(mNewDistanceGameScore) + " ---", x, y, g);
 	y += 16;
 	
 	ScoreStatsUI(sScoreEventCounter, x, y, g);
 	
-	if (!sBestScoreEventCounter.empty())
+	if (mNewDistanceGameScoreBest < mNewDistanceGameScoreBestAllTime)
 	{
-		y += 10;
-		g.setColour(Colours::lawngreen);
-		DrawTextAtXY("Best score: " + std::to_string(mNewDistanceGameScoreBest), x, y, g);
-		
-		y += 16;
-		ScoreStatsUI(sBestScoreEventCounter, x, y, g);
+		if (!sBestScoreEventCounter.empty())
+		{
+			y += 10;
+			g.setColour(Colours::lawngreen);
+			DrawTextAtXY("--- Best score: " + std::to_string(mNewDistanceGameScoreBest) + " ---", x, y, g);
+			
+			y += 16;
+			ScoreStatsUI(sBestScoreEventCounter, x, y, g);
+		}
 	}
 	
 	if (!sBestAllTimeScoreEventCounter.empty())
 	{
 		y += 10;
 		g.setColour(Colours::lawngreen);
-		DrawTextAtXY("Best all-time score: " + std::to_string(mNewDistanceGameScoreBestAllTime), x, y, g);
+		DrawTextAtXY("--- Best all-time score: " + std::to_string(mNewDistanceGameScoreBestAllTime) + " ---", x, y, g);
 		
-		if (mNewDistanceGameScoreBest < mNewDistanceGameScoreBestAllTime)
-		{
-			y += 16;
-			ScoreStatsUI(sBestAllTimeScoreEventCounter, x, y, g);
-		}
+		y += 16;
+		ScoreStatsUI(sBestAllTimeScoreEventCounter, x, y, g);
 	}
 }
 
@@ -2342,27 +2349,6 @@ void TPongView::DoDistanceGame(Graphics& g)
 
 			break;
 		}
-			
-		// this state is no longer used - we now jump right into eWaitingForStart when the game ends
-		/*case eActive:
-		{
-			mDistanceGameString = "Active";
-			this->Explosion(mShipObject->Pos(), true);
-			mShipObject->ShipReset();
-			
-			DrawTextAtY("Game Over", 200, g);
-			
-			// see if it's time to start the next game
-			if (mNextDistanceGameStartTimeMS)
-			{
-				const int64_t nextStartMS = mNextDistanceGameStartTimeMS - gNowMS;
-				if (nextStartMS > 0)
-					DrawTextAtY("next game starts in:  " + std::to_string(nextStartMS/1000), 380, g);
-				else
-					mDistanceGameStatus = eWaitingForStart;
-			}
-			break;
-		}*/
 	}
 }
 
